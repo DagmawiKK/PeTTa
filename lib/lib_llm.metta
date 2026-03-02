@@ -37,7 +37,9 @@
 
 ;Function to prompt a model via OpenRouter API:
 (= (useOpenRouter $model $prompt)
-   (py-call (lib_llm.openrouter_chat $model $prompt)))
+   (useOpenRouter $model 100000 medium $prompt))
+(= (useOpenRouter $model $max_tokens $effort $prompt)
+   (py-call (lib_llm.openrouter_chat $model $prompt $max_tokens $effort)))
 
 (= (sread-safe $w)
    (case (catch (sread $w))

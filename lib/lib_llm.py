@@ -2,11 +2,13 @@ import json
 import os
 import urllib.request
 
-def openrouter_chat(model, prompt):
+def openrouter_chat(model, prompt, max_tokens, effort):
     key = os.environ.get('OPENROUTER_API_KEY', '')
     data = json.dumps({
         'model': model,
-        'messages': [{'role': 'user', 'content': prompt}]
+        'messages': [{'role': 'user', 'content': prompt}],
+        'max_tokens': max_tokens,
+        'reasoning': {'effort': effort}
     }).encode('utf-8')
     req = urllib.request.Request(
         'https://openrouter.ai/api/v1/chat/completions',
