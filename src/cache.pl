@@ -117,6 +117,17 @@ memoizable_fun(Fun, Arity) :-
 %%% Main Cache Call Predicate
 %%%===================================================================
 
+%%%===================================================================
+%%% Adaptive Threshold Configuration
+%%%===================================================================
+
+:- dynamic cache_unique_threshold/1.
+cache_unique_threshold(100). % Stop caching after 100 unique argument patterns
+
+%%%===================================================================
+%%% Main Cache Call Predicate with Adaptive Logic
+%%%===================================================================
+
 cache_call(Fun, AVs, Out) :-
     append(AVs, [Out], GoalArgs),
     Goal =.. [Fun | GoalArgs],
@@ -124,18 +135,43 @@ cache_call(Fun, AVs, Out) :-
     Arity is NArgs + 1,
     ( ground(AVs),
       memoizable_fun(Fun, Arity)
-    -> memo_current_generation(Fun, Arity, Gen),
-       ( metta_memo_entry(Fun, Arity, Gen, AVs, _, CachedResults)
-       -> member(Out, CachedResults)
-       ; findall(Result,
-           ( append(AVs, [Result], RawArgs),
-             RawGoal =.. [Fun | RawArgs],
-             call(RawGoal)
-           ),
-           RawResults),
-         list_to_set(RawResults, CachedResults),
-         memo_store(Fun, Arity, Gen, AVs, CachedResults),
-         member(Out, CachedResults)
+    -> ( should_cache(Fun, Arity, AVs)
+       -> memo_current_generation(Fun, Arity, Gen),
+          ( metta_memo_entry(Fun, Arity, Gen, AVs, _, CachedResults)
+          -> member(Out, CachedResults)
+          ; findall(Result,
+              ( append(AVs, [Result], RawArgs),
+                RawGoal =.. [Fun | RawArgs],
+                call(RawGoal)
+              ),
+              RawResults),
+            list_to_set(RawResults, CachedResults),
+            memo_store(Fun, Arity, Gen, AVs, CachedResults),
+            member(Out, CachedResults)
+          )
+       ; call(Goal) % Skip caching for functions with too many unique args
        )
     ; call(Goal)
     ).
+
+%%%===================================================================
+%%% Adaptive Decision Logic
+%%%===================================================================
+
+should_cache(Fun, Arity, AVs) :-
+    % Check if we've seen this argument pattern before
+    metta_memo_entry(Fun, Arity, _, AVs, _, _),
+    !. % Yes - allow caching
+    
+should_cache(Fun, Arity, AVs) :-
+    % No existing entry - check how many unique entries we have
+    findall(Args, metta_memo_entry(Fun, Arity, _, Args, _, _), UniqueArgs),
+    length(UniqueArgs, Count),
+    cache_unique_threshold(MaxUnique),
+    Count < MaxUnique, % Only cache if below threshold
+    !.
+
+should_cache(Fun, Arity, _AVs) :-
+    % Too many unique patterns - disable caching for this function
+    format('[CACHE] DISABLED ~w/~w (too many unique patterns)~n', [Fun, Arity]),
+    !, fail.
