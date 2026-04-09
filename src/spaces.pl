@@ -16,7 +16,7 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                  once(translate_clause(Term, Clause)),
                                   assertz(Clause, Ref),
                                   assertz(translated_from(Ref, Term)),
-                                  invalidate_metta_memo_fun(FAtom),
+                                  cache_invalidate(FAtom),
                                   invalidate_specializations(FAtom),
                                   maybe_print_compiled_clause("added function", Term, Clause).
 
@@ -33,7 +33,7 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                          findall(Ref, translated_from(Ref, Term), Refs),
                                           forall(member(Ref, Refs), erase(Ref)),
                                           retractall(translated_from(_, Term)),
-                                          invalidate_metta_memo_fun(F),
+                                          cache_invalidate(F),
                                           invalidate_specializations(F),
                                          ( \+ ( current_predicate(F/A), functor(H2, F, A), clause(H2, _, _) )
                                            -> retractall(fun(F)) ; true ),
