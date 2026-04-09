@@ -98,6 +98,7 @@ forget_symbol(Name) :- retractall('&self'(=, [Name|_], _)),
                        forall(member(R, Refs), erase(R)),
                        retractall(arity(Name,_)),
                        retractall(fun(Name)),
+                       invalidate_metta_memo_fun(Name),
                        catch(nb_delete(Name), _, true),
                        retractall(ho_specialization(Name,_)).
 
