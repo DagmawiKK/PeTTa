@@ -143,7 +143,7 @@ cache_call(Fun, AVs, Out) :-
     Goal =.. [Fun | GoalArgs],
     length(AVs, NArgs),
     Arity is NArgs + 1,
-        \+ memo_disabled_runtime(Fun),
+    (   \+ memo_disabled_runtime(Fun),
         ground(AVs),
         args_worth_caching(AVs),            % rejects floats and oversized terms
         memoizable_fun(Fun, Arity),
@@ -160,7 +160,7 @@ cache_call(Fun, AVs, Out) :-
             memo_store(Fun, Arity, Gen, AVs, CachedResults),
             member(Out, CachedResults)
         )
-        ( memo_enabled(Fun),
+    ;   ( memo_enabled(Fun),
           \+ memo_disabled_runtime(Fun),
           ground(AVs),
           \+ args_worth_caching(AVs)
