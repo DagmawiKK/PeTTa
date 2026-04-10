@@ -92,9 +92,44 @@ rewrite_streamops([subtraction, [superpose|A], [superpose|B]],
                                                           [collapse, [superpose|B]]]]]).
 rewrite_streamops(X, X).
 
+
+%--- AST Inlining ---:
+contains_call(X, _) :- var(X), !, fail.
+contains_call(X, F) :- atomic(X), !, X == F.
+contains_call([H|T], F) :- contains_call(H, F) ; contains_call(T, F).
+
+ast_size(X, 1) :- (var(X) ; atomic(X)), !.
+ast_size([H|T], S) :- ast_size(H, S1), ast_size(T, S2), S is S1 + S2.
+
+is_inlineable(F, Params, Body) :-
+    catch(nb_getval(F, [fun_meta(Params, Body)|_]), _, fail),
+    \+ contains_call(Body, F),
+    ast_size(Body, Size),
+    Size < 30.
+
+wrap_lets([], [], Body, Body).
+wrap_lets([P|Ps], [A|As], Body, Wrapped) :-
+    ( (var(A) ; atomic(A)) ->
+        P = A,
+        wrap_lets(Ps, As, Body, Wrapped)
+    ;
+        wrap_lets(Ps, As, Body, Inner),
+        Wrapped = [let, P, A, Inner]
+    ).
+
+rewrite_inline([F|Args], Out) :-
+    atom(F),
+    is_inlineable(F, Params, Body),
+    length(Params, L), length(Args, L),
+    copy_term((Params, Body), (ParamsCopy, BodyCopy)),
+    wrap_lets(ParamsCopy, Args, BodyCopy, Out), !.
+rewrite_inline(X, X).
+
 %Guarded stream ops rewrite rule application, successfully avoiding copy_term:
-safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) -> rewrite_streamops(In, Out)
-                                                                          ; Out = In).
+safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) ->
+                                             rewrite_streamops(In, Mid),
+                                             rewrite_inline(Mid, Out)
+                                           ; Out = In ).
 
 %Turn MeTTa code S-expression into goals list:
 translate_expr(X, [], X)          :- ((var(X) ; atomic(X)) ; X = partial(_,_)), !.
