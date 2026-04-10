@@ -1,9 +1,14 @@
 :- use_module(library(lists)).
 
-:- dynamic metta_memo_entry/6.
+:- dynamic metta_memo_entry/5.
 :- dynamic metta_memo_generation/3.
 :- dynamic memo_enabled/1.
 :- dynamic memo_disabled_runtime/1.
+
+:- dynamic metta_memo_count/3.
+:- dynamic metta_memo_head/3.
+:- dynamic metta_memo_tail/3.
+:- dynamic metta_memo_q/4.
 
 enable_memoization(Fun) :-
     ( memo_enabled(Fun) -> true ; assertz(memo_enabled(Fun)) ).
@@ -16,29 +21,6 @@ runtime_disable(Fun) :-
     ( memo_disabled_runtime(Fun) -> true
     ; assertz(memo_disabled_runtime(Fun))
     ).
-
-ensure_metta_memo_counters :-
-    ( catch(nb_current(metta_memo_seq, _), _, fail) -> true ; nb_setval(metta_memo_seq, 0) ),
-    ( catch(nb_current(metta_memo_size, _), _, fail) -> true ; nb_setval(metta_memo_size, 0) ),
-    ( catch(nb_current(metta_memo_oldest, _), _, fail) -> true ; nb_setval(metta_memo_oldest, 1) ).
-
-memo_next_seq(Seq) :-
-    ensure_metta_memo_counters,
-    nb_getval(metta_memo_seq, Prev),
-    Seq is Prev + 1,
-    nb_setval(metta_memo_seq, Seq).
-
-memo_size_inc :-
-    ensure_metta_memo_counters,
-    nb_getval(metta_memo_size, Prev),
-    Next is Prev + 1,
-    nb_setval(metta_memo_size, Next).
-
-memo_size_dec :-
-    ensure_metta_memo_counters,
-    nb_getval(metta_memo_size, Prev),
-    Next is max(0, Prev - 1),
-    nb_setval(metta_memo_size, Next).
 
 memo_current_generation(Fun, Arity, Gen) :-
     ( metta_memo_generation(Fun, Arity, Found) -> Gen = Found ; Gen = 0 ).
@@ -54,35 +36,58 @@ cache_invalidate(Fun) :-
     sort(RawArities, Arities),
     ( Arities == [] -> true
     ; forall(member(Arity, Arities),
-        ( bump_metta_memo_generation(Fun, Arity)
+        ( bump_metta_memo_generation(Fun, Arity),
+          retractall(metta_memo_count(Fun, Arity, _)),
+          retractall(metta_memo_head(Fun, Arity, _)),
+          retractall(metta_memo_tail(Fun, Arity, _)),
+          retractall(metta_memo_q(Fun, Arity, _, _))
         ))
     ).
 
 cache_clear :-
-    retractall(metta_memo_entry(_, _, _, _, _, _)),
+    retractall(metta_memo_entry(_, _, _, _, _)),
     retractall(metta_memo_generation(_, _, _)),
     retractall(memo_disabled_runtime(_)),
-    nb_setval(metta_memo_seq, 0),
-    nb_setval(metta_memo_size, 0),
-    nb_setval(metta_memo_oldest, 1),
-    ( catch(nb_current(metta_cms, _), _, fail) -> nb_delete(metta_cms) ; true ).
+    retractall(metta_memo_count(_, _, _)),
+    retractall(metta_memo_head(_, _, _)),
+    retractall(metta_memo_tail(_, _, _)),
+    retractall(metta_memo_q(_, _, _, _)),
+    ( catch(nb_current(metta_cms, _), _, fail) -> nb_delete(metta_cms) ; true ),
+    ( catch(nb_current(metta_memo_accesses, _), _, fail) -> nb_delete(metta_memo_accesses) ; true ).
 
-metta_memo_limit(10000).
+% ======================================================================
+% W-TinyLFU Frequency Sketch (Count-Min Sketch approximation)
+% O(1) in-place array updates via nb_setarg (Zero database assertions)
+% ======================================================================
 
 ensure_cms :-
     ( catch(nb_current(metta_cms, _), _, fail) -> true
     ; functor(CMS, v, 8192),
       forall(between(1, 8192, I), nb_setarg(I, CMS, 0)),
-      nb_setval(metta_cms, CMS)
-    ),
-    ( catch(nb_current(metta_memo_accesses, _), _, fail) -> true
-    ; nb_setval(metta_memo_accesses, 0)
+      nb_setval(metta_cms, CMS),
+      nb_setval(metta_memo_accesses, 0)
     ).
 
-record_access(Fun, AVs) :-
+get_freq(AVs, Freq) :-
+    ( catch(nb_current(metta_cms, CMS), _, fail) ->
+        term_hash(AVs, HashRaw),
+        Hash is (abs(HashRaw) mod 8192) + 1,
+        arg(Hash, CMS, Val),
+        ( integer(Val) -> Freq = Val ; Freq = 0 )
+    ; Freq = 0 ).
+
+record_hit(AVs) :-
+    ( catch(nb_current(metta_cms, CMS), _, fail) ->
+        term_hash(AVs, HashRaw),
+        Hash is (abs(HashRaw) mod 8192) + 1,
+        arg(Hash, CMS, Val),
+        ( integer(Val) -> NextVal is Val + 1 ; NextVal = 1 ),
+        nb_setarg(Hash, CMS, NextVal)
+    ; true ).
+
+record_miss(AVs) :-
     ensure_cms,
-    Key = Fun-AVs,
-    term_hash(Key, HashRaw),
+    term_hash(AVs, HashRaw),
     Hash is (abs(HashRaw) mod 8192) + 1,
     nb_getval(metta_cms, CMS),
     arg(Hash, CMS, Val),
@@ -90,76 +95,81 @@ record_access(Fun, AVs) :-
     nb_setarg(Hash, CMS, NextVal),
     
     nb_getval(metta_memo_accesses, Acc),
-    ( integer(Acc) -> NextAcc is Acc + 1 ; NextAcc = 1 ),
+    NextAcc is Acc + 1,
     nb_setval(metta_memo_accesses, NextAcc),
-    ( NextAcc > 10000 -> halve_cms ; true ).
-
-get_freq(Fun, AVs, Freq) :-
-    ensure_cms,
-    Key = Fun-AVs,
-    term_hash(Key, HashRaw),
-    Hash is (abs(HashRaw) mod 8192) + 1,
-    nb_getval(metta_cms, CMS),
-    arg(Hash, CMS, Val),
-    ( integer(Val) -> Freq = Val ; Freq = 0 ).
+    ( NextAcc > 8192 -> halve_cms ; true ).
 
 halve_cms :-
     nb_setval(metta_memo_accesses, 0),
     nb_getval(metta_cms, CMS),
-    functor(CMS, _, Arity),
-    forall(between(1, Arity, I),
+    forall(between(1, 8192, I),
         ( arg(I, CMS, Val),
           ( integer(Val) -> NewVal is Val // 2 ; NewVal = 0 ),
           nb_setarg(I, CMS, NewVal)
         )).
 
+% ======================================================================
+% O(1) Gapless Queue & Admission Policy (Per-Function TinyLFU)
+% ======================================================================
 
-find_victim(VFun, VArity, VGen, VAVs, VSeq, VCached) :-
-    ensure_metta_memo_counters,
-    nb_getval(metta_memo_oldest, Oldest),
-    nb_getval(metta_memo_seq, MaxSeq),
-    find_victim_scan(Oldest, MaxSeq, VFun, VArity, VGen, VAVs, VSeq, VCached, NextOldest),
-    nb_setval(metta_memo_oldest, NextOldest).
+:- dynamic cache_unique_threshold/1.
+cache_unique_threshold(100).
 
-find_victim_scan(Old, Max, VFun, VArity, VGen, VAVs, VSeq, VCached, NextOldest) :-
-    Old =< Max,
-    ( metta_memo_entry(VFun, VArity, VGen, VAVs, Old, VCached) ->
-        VSeq = Old,
-        NextOldest is Old + 1
-    ;   Old1 is Old + 1,
-        find_victim_scan(Old1, Max, VFun, VArity, VGen, VAVs, VSeq, VCached, NextOldest)
-    ).
+get_memo_queue_state(Fun, Arity, Count, Head, Tail) :-
+    ( metta_memo_count(Fun, Arity, C) -> Count = C ; Count = 0 ),
+    ( metta_memo_head(Fun, Arity, H) -> Head = H ; Head = 0 ),
+    ( metta_memo_tail(Fun, Arity, T) -> Tail = T ; Tail = 0 ).
+
+set_memo_queue_state(Fun, Arity, Count, Head, Tail) :-
+    retractall(metta_memo_count(Fun, Arity, _)),
+    retractall(metta_memo_head(Fun, Arity, _)),
+    retractall(metta_memo_tail(Fun, Arity, _)),
+    asserta(metta_memo_count(Fun, Arity, Count)),
+    asserta(metta_memo_head(Fun, Arity, Head)),
+    asserta(metta_memo_tail(Fun, Arity, Tail)).
 
 memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
-    metta_memo_limit(Limit),
-    ensure_metta_memo_counters,
-    nb_getval(metta_memo_size, Size),
-    ( Size < Limit ->
-        % Direct admission if under limit
-        memo_next_seq(Seq),
-        assertz(metta_memo_entry(Fun, Arity, Gen, AVs, Seq, CachedResults)),
-        memo_size_inc
+    cache_unique_threshold(Max),
+    get_memo_queue_state(Fun, Arity, Count, Head, Tail),
+    ( Count < Max ->
+        Count1 is Count + 1,
+        Tail1 is Tail + 1,
+        assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
+        assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
+        set_memo_queue_state(Fun, Arity, Count1, Head, Tail1)
     ;
-        % Cache is full. TinyLFU admission comparison.
-        get_freq(Fun, AVs, NewFreq),
-        ( find_victim(VFun, VArity, VGen, VAVs, VSeq, VCached) ->
-            get_freq(VFun, VAVs, VictimFreq),
+        % Cache full: W-TinyLFU admission & eviction
+        Head1 is Head + 1,
+        ( retract(metta_memo_q(Fun, Arity, Head1, VictimAVs)) ->
+            get_freq(VictimAVs, VictimFreq),
+            get_freq(AVs, NewFreq),
             ( NewFreq >= VictimFreq ->
-                % Admit new, evict victim
-                retract(metta_memo_entry(VFun, VArity, VGen, VAVs, VSeq, VCached)),
-                memo_next_seq(Seq),
-                assertz(metta_memo_entry(Fun, Arity, Gen, AVs, Seq, CachedResults))
+                % Evict victim
+                retractall(metta_memo_entry(Fun, Arity, _, VictimAVs, _)),
+                % Admit new item
+                Tail1 is Tail + 1,
+                assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
+                assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
+                set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
             ;
-                retract(metta_memo_entry(VFun, VArity, VGen, VAVs, VSeq, VCached)),
-                memo_next_seq(UpdatedVSeq),
-                assertz(metta_memo_entry(VFun, VArity, VGen, VAVs, UpdatedVSeq, VCached))
+                % Reject new item. Give Victim a Second Chance (moved to tail)
+                _ = Gen,
+                Tail1 is Tail + 1,
+                assertz(metta_memo_q(Fun, Arity, Tail1, VictimAVs)),
+                set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
             )
-        ;   % Failsafe if scan failed: just insert
-            memo_next_seq(Seq),
-            assertz(metta_memo_entry(Fun, Arity, Gen, AVs, Seq, CachedResults)),
-            memo_size_inc
+        ;   % Failsafe if queue is out of sync
+            Tail1 is Tail + 1,
+            assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
+            assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
+            Count1 is Count + 1,
+            set_memo_queue_state(Fun, Arity, Count1, Head1, Tail1)
         )
     ).
+
+% ======================================================================
+% Core Memoization Logic
+% ======================================================================
 
 memoizable_fun(Fun, Arity) :-
     memo_enabled(Fun),
@@ -185,17 +195,6 @@ args_worth_caching(AVs) :-
     \+ args_contain_float(AVs),
     \+ args_too_complex(AVs).
 
-:- dynamic cache_unique_threshold/1.
-cache_unique_threshold(100).
-
-should_cache(Fun, Arity, AVs) :-
-    metta_memo_entry(Fun, Arity, _, AVs, _, _), !.
-
-should_cache(Fun, Arity, _AVs) :-
-    aggregate_all(count, metta_memo_entry(Fun, Arity, _, _, _, _), Count),
-    cache_unique_threshold(Max),
-    Count < Max.
-
 cache_call(Fun, AVs, Out) :-
     append(AVs, [Out], GoalArgs),
     Goal =.. [Fun | GoalArgs],
@@ -203,23 +202,26 @@ cache_call(Fun, AVs, Out) :-
     Arity is NArgs + 1,
     (   \+ memo_disabled_runtime(Fun),
         ground(AVs),
-        args_worth_caching(AVs),            % rejects floats and oversized terms
-        memoizable_fun(Fun, Arity),
-        should_cache(Fun, Arity, AVs)       % threshold checked BEFORE findall
-    ->  memo_current_generation(Fun, Arity, Gen),
-        record_access(Fun, AVs),            % $O(1)$ fast Count-Min Sketch update
-        ( metta_memo_entry(Fun, Arity, Gen, AVs, _, CachedResults)
-        ->  member(Out, CachedResults)      % Hit: ZERO database modifications
-        ;   findall(Result,
+        args_worth_caching(AVs),
+        memoizable_fun(Fun, Arity)
+    ->  ( metta_memo_entry(Fun, Arity, _Gen, AVs, CachedResults)
+        ->  % O(1) FAST HIT
+            record_hit(AVs),
+            member(Out, CachedResults)
+        ;   % CACHE MISS
+            memo_current_generation(Fun, Arity, MissGen),
+            findall(Result,
                 ( append(AVs, [Result], RawArgs),
                   RawGoal =.. [Fun | RawArgs],
                   call(RawGoal) ),
                 RawResults),
             list_to_set(RawResults, CachedResults),
-            memo_store(Fun, Arity, Gen, AVs, CachedResults), % Miss: TinyLFU admission
+            memo_store(Fun, Arity, MissGen, AVs, CachedResults),
+            record_miss(AVs),
             member(Out, CachedResults)
         )
-    ;   ( memo_enabled(Fun),
+    ;   % FALLBACK / RUNTIME DISABLE
+        ( memo_enabled(Fun),
           \+ memo_disabled_runtime(Fun),
           ground(AVs),
           \+ args_worth_caching(AVs)
