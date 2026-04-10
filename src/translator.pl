@@ -232,6 +232,12 @@ translate_expr([H0|T0], Goals, Out) :-
              exclude(==(true), [ConjList], CleanConjs),
              append(GsH, CleanConjs, GsMid),
              append(GsMid, [maplist([XVar, Y]>>(BodyCallConj, ( number(BodyCall) -> Y is BodyCall ; Y = BodyCall )), L, Out)], Goals)
+        ; (HV == 'parallel-map' ; HV == 'parallel-map-atom'), T = [List, XVar, Body]
+          -> translate_expr_to_conj(List, ConjList, L),
+             translate_expr_to_conj(Body, BodyCallConj, BodyCall),
+             exclude(==(true), [ConjList], CleanConjs),
+             append(GsH, CleanConjs, GsMid),
+             append(GsMid, [concurrent_maplist([XVar, Y]>>(BodyCallConj, ( number(BodyCall) -> Y is BodyCall ; Y = BodyCall )), L, Out)], Goals)
         ; HV == 'filter-atom', T = [List, XVar, Cond]
           -> translate_expr_to_conj(List, ConjList, L),
              translate_expr_to_conj(Cond, CondConj, CondGoal),

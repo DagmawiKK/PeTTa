@@ -250,6 +250,9 @@ call_goals([G|Gs]) :- call(G),
 'map-atom'([H|T], Func, [R|RT]) :- reduce([Func,H], R),
                                    'map-atom'(T, Func, RT).
 
+'parallel-map-atom'(List, Func, Out) :- concurrent_maplist({Func}/[Elem, Res]>>reduce([Func, Elem], Res), List, Out).
+'parallel-map'(List, Func, Out) :- 'parallel-map-atom'(List, Func, Out).
+
 'filter-atom'([], _Func, []).
 'filter-atom'([H|T], Func, Out) :- ( reduce([Func,H], true) -> Out = [H|RT]
                                                              ; Out = RT ),
@@ -305,6 +308,6 @@ register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
                           'pow-math', 'sqrt-math', 'sort-atom','abs-math', 'log-math', 'trunc-math', 'ceil-math',
                           'floor-math', 'round-math', 'sin-math', 'cos-math', 'tan-math', 'asin-math','random-int','random-float',
                           'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
-                          'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time', library, exists_file,
+                          'foldl-atom', 'map-atom', 'parallel-map-atom', 'parallel-map', 'filter-atom','current-time','format-time', library, exists_file,
                           import_prolog_function, 'Predicate', callPredicate, assertaPredicate, assertzPredicate, retractPredicate,
                           'add-translator-rule!', 'remove-translator-rule!', argv, 'memoize!', 'unmemoize!']).
