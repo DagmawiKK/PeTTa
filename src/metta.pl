@@ -155,6 +155,22 @@ member(X, L, true) :- member(X, L).
 'union-atom'(A, B, Out) :- append(A, B, Out).
 'intersection-atom'(A, B, Out) :- intersection(A, B, Out).
 
+isEqual(A, B, Out) :-
+    ( is_list(A), is_list(B) ->
+        ( msort(A, SortedA), msort(B, SortedB), SortedA == SortedB -> Out = true ; Out = false )
+    ; ( A == B -> Out = true ; Out = false )
+    ).
+
+set(Expr, Acc, Out) :-
+    maplist(normalize_for_set, Expr, NormalizedExpr),
+    sort(NormalizedExpr, UniqueNormalized),
+    append(Acc, UniqueNormalized, Out).
+
+normalize_for_set(X, Sorted) :-
+    ( is_list(X) -> msort(X, Sorted) ; Sorted = X ).
+
+
+
 %%% Type system: %%%
 get_function_type([F|Args], T) :- nonvar(F), match('&self', [':',F,[->|Ts]], _, _),
                                   append(As,[T],Ts),
@@ -300,6 +316,7 @@ register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
                           foldl, first, last, append, length, 'size-atom', sort, msort, member, 'is-member', 'exclude-item', list_to_set, maplist, eval, reduce, 'import!',
                           'add-atom', 'remove-atom', 'get-atoms', match, 'is-var', 'is-expr', 'is-space', 'get-mettatype',
                           decons, 'decons-atom', 'py-call', 'get-type', 'get-metatype', '=alpha', concat, sread, cons, reverse,
+                          isEqual, set,
                           '#+','#-','#*','#div','#//','#mod','#min','#max','#<','#>','#=','#\\=','set_hook',
                           'union-atom', 'cons-atom', 'intersection-atom', 'subtraction-atom', 'index-atom', id,
                           'pow-math', 'sqrt-math', 'sort-atom','abs-math', 'log-math', 'trunc-math', 'ceil-math',
