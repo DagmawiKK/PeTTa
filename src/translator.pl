@@ -232,12 +232,39 @@ translate_expr([H0|T0], Goals, Out) :-
              exclude(==(true), [ConjList], CleanConjs),
              append(GsH, CleanConjs, GsMid),
              append(GsMid, [maplist([XVar, Y]>>(BodyCallConj, ( number(BodyCall) -> Y is BodyCall ; Y = BodyCall )), L, Out)], Goals)
+        ; HV == 'map-atom', T = [List, Func]
+          -> translate_expr_to_conj(List, ConjList, L),
+             exclude(==(true), [ConjList], CleanConjs),
+             append(GsH, CleanConjs, GsMid),
+             ( atom(Func), fun(Func) ->
+                 append(GsMid, [maplist(Func, L, Out)], Goals)
+               ; append(GsMid, [maplist({Func}/[X,Y]>>reduce([Func,X],Y), L, Out)], Goals) )
+        ; (HV == 'parallel-map' ; HV == 'parallel-map-atom'), T = [List, XVar, Body]
+          -> translate_expr_to_conj(List, ConjList, L),
+             translate_expr_to_conj(Body, BodyCallConj, BodyCall),
+             exclude(==(true), [ConjList], CleanConjs),
+             append(GsH, CleanConjs, GsMid),
+             append(GsMid, [concurrent_maplist([XVar, Y]>>(BodyCallConj, ( number(BodyCall) -> Y is BodyCall ; Y = BodyCall )), L, Out)], Goals)
+        ; (HV == 'parallel-map' ; HV == 'parallel-map-atom'), T = [List, Func]
+          -> translate_expr_to_conj(List, ConjList, L),
+             exclude(==(true), [ConjList], CleanConjs),
+             append(GsH, CleanConjs, GsMid),
+             ( atom(Func), fun(Func) ->
+                 append(GsMid, [concurrent_maplist(Func, L, Out)], Goals)
+               ; append(GsMid, [concurrent_maplist({Func}/[X,Y]>>reduce([Func,X],Y), L, Out)], Goals) )
         ; HV == 'filter-atom', T = [List, XVar, Cond]
           -> translate_expr_to_conj(List, ConjList, L),
              translate_expr_to_conj(Cond, CondConj, CondGoal),
              exclude(==(true), [ConjList], CleanConjs),
              append(GsH, CleanConjs, GsMid),
              append(GsMid, [include([XVar]>>(CondConj, CondGoal), L, Out)], Goals)
+        ; HV == 'filter-atom', T = [List, Func]
+          -> translate_expr_to_conj(List, ConjList, L),
+             exclude(==(true), [ConjList], CleanConjs),
+             append(GsH, CleanConjs, GsMid),
+             ( atom(Func), fun(Func) ->
+                 append(GsMid, [include([X]>>(call(Func, X, Res), Res == true), L, Out)], Goals)
+               ; append(GsMid, [include({Func}/[X]>>(reduce([Func,X],Res), Res == true), L, Out)], Goals) )
         ; HV == '|->', T = [Args, Body] -> next_lambda_name(F),
                                            % find free (non-argument) variables in Body
                                            term_variables(Body, AllVars),
@@ -287,9 +314,12 @@ translate_expr([H0|T0], Goals, Out) :-
                                                      ExprOut = [F|ArgsOut],
                                                      append(Inner, [reduce(ExprOut, Out)], Goals) )
         %Invoke translator to evaluate MeTTa code as data/list:
-        ; HV == eval, T = [Arg] -> append(GsH, [], Inner),
-                                   Goal = eval(Arg, Out),
-                                   append(Inner, [Goal], Goals)
+        ; HV == eval, T = [Arg] ->
+            ( is_list(Arg), Arg = [F|_], atom(F), (fun(F) ; current_predicate(F/_) ; catch(arity(F,_),_,fail))
+              -> translate_expr(Arg, GsArg, Out), append(GsH, GsArg, Goals)
+               ; append(GsH, [], Inner),
+                 Goal = eval(Arg, Out),
+                 append(Inner, [Goal], Goals) )
         %Force arg to remain data/list:
         ; HV == quote, T = [Expr] -> append(GsH, [], Inner),
                                      Out = Expr,
