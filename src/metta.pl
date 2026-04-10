@@ -208,6 +208,8 @@ assert(Goal, true) :- ( call(Goal) -> true
 'format-time'(Format, TimeString) :- get_time(Time), format_time(atom(TimeString), Format, Time).
 
 %%% Python bindings: %%%
+:- ( catch(py_call(builtins:id('None'), _), _, true) -> true ; true ).
+
 'py-call'(SpecList, Result) :- 'py-call'(SpecList, Result, []).
 'py-call'([Spec|Args], Result, Opts) :- ( string(Spec) -> atom_string(A, Spec) ; A = Spec ),
                                         must_be(atom, A),
@@ -217,16 +219,17 @@ assert(Goal, true) :- ( call(Goal) -> true
                                              ( Rest == []
                                                -> compound_name_arguments(Meth, Fun, [])
                                                 ; Meth =.. [Fun|Rest] ),
-                                             py_call(Obj:Meth, Result, Opts)
+                                             with_mutex(python_gil, py_call(Obj:Meth, Result, Opts))
                                            ; atomic_list_concat([M,F], '.', A) % "mod.fun"
                                              -> ( Args == []
                                                   -> compound_name_arguments(Call0, F, [])
                                                    ; Call0 =.. [F|Args] ),
-                                                py_call(M:Call0, Result, Opts)
+                                                with_mutex(python_gil, py_call(M:Call0, Result, Opts))
                                               ; ( Args == []                      % bare "fun"
                                                   -> compound_name_arguments(Call0, A, [])
                                                    ; Call0 =.. [A|Args] ),
-                                                py_call(builtins:Call0, Result, Opts) ).
+                                                with_mutex(python_gil, py_call(builtins:Call0, Result, Opts)) ).
+
 
 %%% States: %%%
 'bind!'(A, ['new-state', B], C) :- 'change-state!'(A, B, C).
@@ -279,8 +282,8 @@ importer_helper(Space, File) :- atom_string(File, SFile),
                                   -> absolute_file_name(SFile, Path, [relative_to(Base)]),
                                      file_directory_name(Path, Dir),
                                      file_base_name(ModPath, ModuleName),
-                                     py_call(sys:path:append(Dir), _),
-                                     py_call(builtins:'__import__'(ModuleName), _)
+                                     with_mutex(python_gil, py_call(sys:path:append(Dir), _)),
+                                     with_mutex(python_gil, py_call(builtins:'__import__'(ModuleName), _))
                                    ; ( Path = SFile ; atomic_list_concat([Base, '/', SFile], Path) ),
                                      ensure_metta_ext(Path, PathWithExt),
                                      exists_file(PathWithExt), !,
