@@ -46,17 +46,10 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
 
 :- dynamic translated_from/2.
 
-% Explicit Memoization Annotators:
 'memoize!'(Fun, 'Empty') :-
     findall(Term, (translated_from(_, Term), Term = [=, [Fun|_], _]), Terms),
     forall(member(Term, Terms), 'remove-atom'('&self', Term, _)),
     enable_memoization(Fun),
-    forall(member(Term, Terms), 'add-atom'('&self', Term, _)).
-
-'unmemoize!'(Fun, 'Empty') :-
-    findall(Term, (translated_from(_, Term), Term = [=, [Fun|_], _]), Terms),
-    forall(member(Term, Terms), 'remove-atom'('&self', Term, _)),
-    disable_memoization(Fun),
     forall(member(Term, Terms), 'add-atom'('&self', Term, _)).
 
 %Match for conjunctive pattern
