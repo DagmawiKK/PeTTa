@@ -216,7 +216,7 @@ cache_call(Fun, AVs, Out) :-
                   RawGoal =.. [Fun | RawArgs],
                   call(RawGoal) ),
                 RawResults),
-            list_to_set(RawResults, CachedResults),
+            CachedResults = RawResults,
             memo_store(Fun, Arity, CurGen, AVs, CachedResults),
             record_miss(AVs),
             member(Out, CachedResults)
