@@ -82,36 +82,36 @@ ensure_cms :-
       nb_setval(metta_memo_accesses, 0)
     ).
 
-get_freq(AVs, Freq) :-
+get_freq(Fun, Arity, AVs, Freq) :-
     with_cms_mutex(
         ( catch(nb_current(metta_cms, CMS), _, fail) ->
             ( catch(nb_current(metta_cms_size, SketchSize), _, fail)
             -> true
             ; functor(CMS, _, SketchSize) ),
-            term_hash(AVs, HashRaw),
+            term_hash((Fun, Arity, AVs), HashRaw),
             Hash is (abs(HashRaw) mod SketchSize) + 1,
             arg(Hash, CMS, Val),
             ( integer(Val) -> Freq = Val ; Freq = 0 )
         ; Freq = 0 )).
 
-record_hit(AVs) :-
+record_hit(Fun, Arity, AVs) :-
     with_cms_mutex(
         ( catch(nb_current(metta_cms, CMS), _, fail) ->
             ( catch(nb_current(metta_cms_size, SketchSize), _, fail)
             -> true
             ; functor(CMS, _, SketchSize) ),
-            term_hash(AVs, HashRaw),
+            term_hash((Fun, Arity, AVs), HashRaw),
             Hash is (abs(HashRaw) mod SketchSize) + 1,
             arg(Hash, CMS, Val),
             ( integer(Val) -> NextVal is Val + 1 ; NextVal = 1 ),
             nb_setarg(Hash, CMS, NextVal)
         ; true )).
 
-record_miss(AVs) :-
+record_miss(Fun, Arity, AVs) :-
     with_cms_mutex(
         ( ensure_cms,
           nb_getval(metta_cms_size, SketchSize),
-          term_hash(AVs, HashRaw),
+          term_hash((Fun, Arity, AVs), HashRaw),
           Hash is (abs(HashRaw) mod SketchSize) + 1,
           nb_getval(metta_cms, CMS),
           arg(Hash, CMS, Val),
@@ -161,8 +161,8 @@ memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
         % Cache full: W-TinyLFU admission & eviction
         Head1 is Head + 1,
         ( retract(metta_memo_q(Fun, Arity, Head1, VictimAVs)) ->
-            get_freq(VictimAVs, VictimFreq),
-            get_freq(AVs, NewFreq),
+            get_freq(Fun, Arity, VictimAVs, VictimFreq),
+            get_freq(Fun, Arity, AVs, NewFreq),
             ( NewFreq >= VictimFreq ->
                 % Evict victim
                 retractall(metta_memo_entry(Fun, Arity, _, VictimAVs, _)),
@@ -182,10 +182,17 @@ memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
             Tail1 is Tail + 1,
             assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
             assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
-            Count1 is Count + 1,
+            Count1 is min(Max, Count + 1),
             set_memo_queue_state(Fun, Arity, Count1, Head1, Tail1)
         )
     ).
+
+store_if_current_generation(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
+    with_cache_fun_mutex(Fun, Arity,
+        ( memo_current_generation(Fun, Arity, CurGen),
+          ( CurGen =:= ExpectedGen
+          -> memo_store(Fun, Arity, CurGen, AVs, CachedResults)
+          ; true ) )).
 
 memoizable_fun(Fun, Arity) :-
     memo_enabled(Fun),
@@ -222,7 +229,7 @@ cache_call(Fun, AVs, Out) :-
     ->  memo_current_generation(Fun, Arity, CurGen),
         ( metta_memo_entry(Fun, Arity, CurGen, AVs, CachedResults)
         ->  % O(1) FAST HIT
-            record_hit(AVs),
+            record_hit(Fun, Arity, AVs),
             member(Out, CachedResults)
         ;   % CACHE MISS
             findall(Result,
@@ -231,18 +238,10 @@ cache_call(Fun, AVs, Out) :-
                   call(RawGoal) ),
                 RawResults),
             CachedResults = RawResults,
-            with_cache_fun_mutex(Fun, Arity,
-                memo_store(Fun, Arity, CurGen, AVs, CachedResults)),
-            record_miss(AVs),
+            store_if_current_generation(Fun, Arity, CurGen, AVs, CachedResults),
+            record_miss(Fun, Arity, AVs),
             member(Out, CachedResults)
         )
     ;   % FALLBACK / RUNTIME DISABLE
-        ( memo_enabled(Fun),
-          \+ memo_disabled_runtime(Fun),
-          ground(AVs),
-          \+ args_worth_caching(AVs)
-        ->  runtime_disable(Fun)
-        ;   true
-        ),
         call(Goal)
     ).

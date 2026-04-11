@@ -47,6 +47,10 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
 :- dynamic translated_from/2.
 
 'memoize!'(Fun, 'Empty') :-
+    ( atom(Fun), fun(Fun)
+    -> true
+    ; throw(error(domain_error(function_symbol, Fun), 'memoize!/2'))
+    ),
     findall(Term, (translated_from(_, Term), Term = [=, [Fun|_], _]), RawTerms),
     sort(RawTerms, Terms),
     forall(member(Term, Terms), 'remove-atom'('&self', Term, _)),
