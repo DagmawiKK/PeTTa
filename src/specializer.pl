@@ -96,9 +96,9 @@ forget_symbol(Name) :- retractall('&self'(=, [Name|_], _)),
                        retractall('&self'(:, Name, _)),
                        findall(Ref, ( current_predicate(Name/A), functor(H, Name, A), clause(H, _, Ref) ), Refs),
                        forall(member(R, Refs), erase(R)),
+                       cache_invalidate(Name),
                        retractall(arity(Name,_)),
                        retractall(fun(Name)),
-                       cache_invalidate(Name),
                        catch(nb_delete(Name), _, true),
                        retractall(ho_specialization(Name,_)).
 
