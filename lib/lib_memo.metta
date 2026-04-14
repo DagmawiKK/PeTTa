@@ -5,4 +5,6 @@
                                                                            ($function (superpose $importfunctions)))
                                                                           (import_prolog_function $function)))
 
-!(import_prolog_functions_from_file (library lib_memo.pl) (memoize!))
+!(import_prolog_functions_from_file
+    (library lib_memo.pl)
+    (memoize! config-memoize get-memoize-config clear-memoize! is-memoized?))
