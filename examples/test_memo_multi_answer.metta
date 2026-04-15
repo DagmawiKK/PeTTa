@@ -9,6 +9,6 @@
 (= (choose $x)
    (Pair $x $x))
 
-; Run twice: second call should come from cached answer-set.
-!(println! (choose 7))
-!(println! (choose 7))
+; First call misses, second hits from cache.
+!(test (choose 7) (7 (Pair 7 7)))
+!(test (choose 7) (7 (Pair 7 7)))

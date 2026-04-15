@@ -9,7 +9,7 @@
 (= (choices $x) (+ $x 2))
 
 ; sum(5,6,7) => 18
-!(println! (choices 5))
+!(test (choices 5) 18)
 
 ; Restore default mode for follow-up runs in the same session.
 !(config-memoize (aggregate none))

@@ -7,6 +7,6 @@
 (= (shape-kind (Pair $x $y))
    pair)
 
-; Two non-ground calls with different variable names should share a variant key.
-!(println! (shape-kind (Pair $a 2)))
-!(println! (shape-kind (Pair $b 2)))
+; Both non-ground calls with different variable names should return pair.
+!(test (shape-kind (Pair $a 2)) pair)
+!(test (shape-kind (Pair $b 2)) pair)
