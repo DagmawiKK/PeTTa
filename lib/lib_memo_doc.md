@@ -5,10 +5,12 @@ This document explains the public API, configuration options, internal behavior 
 ### Enable Memoization
 ```metta
 !(memoize fib)
+!(memoize fib 1) ; only memoize fib with one input argument
 ```
 ### Check Status
 ```metta
 !(is-memoized fib)  ; Returns: true or false
+!(is-memoized fib 1) ; Returns: true if fib/1-input arity is memoized
 ```
 ### Configure Cache
 ```metta
@@ -47,6 +49,12 @@ This document explains the public API, configuration options, internal behavior 
 | `float` | 12 | Decimal precision for float quantization (see notes) |
 | `answer-limit` | 2048 | Maximum answers stored per cache key |
 | `aggregate` | `none` | Ground-call aggregation mode: `none|min|max|sum|count` |
+
+## Arity-Aware Memoization
+- `!(memoize fun)` enables memoization for all arities of `fun` (backward compatible behavior).
+- `!(memoize fun N)` enables memoization only for arity `N`, where `N` is the number of input arguments in MeTTa.
+- Arities do not conflict: functions like `(fun $x)` and `(fun $x $y)` can be memoized independently, including in the same file.
+- Status checks support the same shape: `!(is-memoized fun)` (any arity enabled) and `!(is-memoized fun N)` (specific arity).
 ## Eviction Policies
 - LRU (Least Recently Used): simple FIFO per-function queue; evicts oldest entries when per-function capacity is reached. Good for workloads with recent locality.
 - WTinyLFU (Window TinyLFU): uses a Count‑Min Sketch to estimate frequency and an admission policy that compares a candidate's frequency against the victim's frequency. Prevents "one‑hit wonders" from polluting the cache and is a good default when a small subset of keys are hot.
@@ -64,6 +72,7 @@ Choose `wtinylfu` when you expect a stable hot set; choose `lru` when recency is
 ## Core State (short reference)
 Dynamic predicates exposed in the runtime (for debugging and reasoning):
 - `memo_enabled/1` — functions with memoization enabled
+- `memo_enabled/2` — arity-specific memoization enables (`Fun`, InputArity)
 - `metta_memo_entry/5` — cached results (Fun, Arity, Gen, Args, Results)
 - `metta_memo_generation/3` — generation counter per function (used for invalidation)
 - `metta_memo_count/3`, `metta_memo_head/3`, `metta_memo_tail/3`, `metta_memo_q/4` — per-function queue state

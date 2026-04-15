@@ -3,10 +3,11 @@
 
 % State Declarations
 
-% Tracks functions currently enabled for memoization
+% Tracks functions currently enabled for memoization.
+% memo_enabled/1 means all arities for Fun are memoized.
+% memo_enabled/2 means only a specific call arity (input-argument count).
 :- dynamic memo_enabled/1.
-
-% Tracks arities for functions being memoized
+:- dynamic memo_enabled/2.
 :- dynamic arity/2.
 
 % Cached results: metta_memo_entry(Fun, Arity, Gen, AVs, Results)
@@ -40,7 +41,8 @@
 
 :- multifile metta_try_dispatch_call/4.
 metta_try_dispatch_call(Fun, Args, Out, Goal) :-
-    memo_enabled(Fun),
+    length(Args, CallArity),
+    memoization_enabled_for_call(Fun, CallArity),
     Goal = cache_call(Fun, Args, Out).
 
 :- multifile metta_on_function_changed/1.
@@ -146,8 +148,12 @@ memo_stats_snapshot(Stats) :-
 enable_memoization(Fun) :-
     ( memo_enabled(Fun) -> true ; assertz(memo_enabled(Fun)) ).
 
+enable_memoization(Fun, CallArity) :-
+    ( memo_enabled(Fun, CallArity) -> true ; assertz(memo_enabled(Fun, CallArity)) ).
+
 disable_memoization(Fun) :-
-    retractall(memo_enabled(Fun)).
+    retractall(memo_enabled(Fun)),
+    retractall(memo_enabled(Fun, _)).
 
 memo_current_generation(Fun, Arity, Gen) :-
     ( metta_memo_generation(Fun, Arity, Found) -> Gen = Found ; Gen = 0 ).
@@ -228,8 +234,16 @@ cache_clear :-
     cache_invalidate(Fun).
 
 'is-memoized'(Fun, true) :-
-    memo_enabled(Fun), !.
+    ( memo_enabled(Fun)
+    ; memo_enabled(Fun, _)
+    ), !.
 'is-memoized'(_, false).
+
+'is-memoized'(Fun, CallArity, true) :-
+    ( memo_enabled(Fun)
+    ; memo_enabled(Fun, CallArity)
+    ), !.
+'is-memoized'(_, _, false).
 
 % Synchronization Helpers
 
@@ -511,9 +525,21 @@ store_if_current_generation(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
 
 % Key Canonicalization and Replay
 
+memoization_enabled_for_call(Fun, CallArity) :-
+    memo_enabled(Fun)
+    ; memo_enabled(Fun, CallArity).
+
+memoization_enabled_for_predicate_arity(Fun, PredArity) :-
+    integer(PredArity),
+    PredArity >= 1,
+    CallArity is PredArity - 1,
+    memoization_enabled_for_call(Fun, CallArity).
+
 memoizable_fun(Fun, Arity) :-
-    memo_enabled(Fun),
     current_predicate(Fun/Arity),
+    memoization_enabled_for_predicate_arity(Fun, Arity),
+    integer(Arity),
+    Arity >= 1,
     length(HeadArgs, Arity),
     Head =.. [Fun | HeadArgs],
     \+ predicate_property(Head, built_in).
@@ -750,4 +776,24 @@ cache_call(Fun, AVs, Out) :-
     sort(RawTerms, Terms),
     forall(member(Term, Terms), 'remove-atom'('&self', Term, _)),
     enable_memoization(Fun),
+    forall(member(Term, Terms), 'add-atom'('&self', Term, _)).
+
+'memoize'(Fun, CallArity, 'Empty') :-
+    ( atom(Fun), fun(Fun)
+    -> true
+    ; throw(error(domain_error(function_symbol, Fun), 'memoize!/3'))
+    ),
+    ( integer(CallArity), CallArity >= 0
+    -> true
+    ; throw(error(domain_error(nonneg_integer, CallArity), 'memoize!/3'))
+    ),
+    findall(Term,
+        ( translated_from(_, Term),
+          Term = [=, [Fun|Args], _],
+          length(Args, CallArity)
+        ),
+        RawTerms),
+    sort(RawTerms, Terms),
+    forall(member(Term, Terms), 'remove-atom'('&self', Term, _)),
+    enable_memoization(Fun, CallArity),
     forall(member(Term, Terms), 'add-atom'('&self', Term, _)).
