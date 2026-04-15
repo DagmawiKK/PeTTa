@@ -31,10 +31,10 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                              -> ( Rest == [] -> nb_delete(F)
                                                               ; nb_setval(F, Rest) ) ; true ),
                                          findall(Ref, translated_from(Ref, Term), Refs),
-                                          forall(member(Ref, Refs), erase(Ref)),
-                                          retractall(translated_from(_, Term)),
+                                         forall(member(Ref, Refs), erase(Ref)),
+                                         retractall(translated_from(_, Term)),
                                          metta_on_function_changed(F),
-                                          invalidate_specializations(F),
+                                         invalidate_specializations(F),
                                          ( \+ ( current_predicate(F/A), functor(H2, F, A), clause(H2, _, _) )
                                            -> retractall(fun(F)),
                                               metta_on_function_removed(F)
