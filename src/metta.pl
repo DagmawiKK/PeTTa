@@ -19,8 +19,8 @@ library(X, Y, Path) :- library_path(Base), atomic_list_concat([Base, '/../', X, 
 :- use_module(library(process)).
 :- use_module(library(filesex)).
 :- current_prolog_flag(argv, Argv),
-   ( member(mork, Argv) -> ensure_loaded([parser, translator, specializer, filereader, '../mork_ffi/morkspaces', spaces])
-                         ; ensure_loaded([parser, translator, specializer, filereader, spaces])).
+( member(mork, Argv) -> ensure_loaded([cache, parser, translator, specializer, filereader, '../mork_ffi/morkspaces', spaces])
+; ensure_loaded([cache, parser, translator, specializer, filereader, spaces])).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
@@ -291,6 +291,7 @@ importer_helper(Space, File) :- atom_string(File, SFile),
 
 %%% Registration: %%%
 :- dynamic fun/1.
+
 register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max, 'change-state!', 'get-state', 'bind!',
                           '<','>','==', '!=', '=', '=?', '<=', '>=', and, or, xor, implies, not, sqrt, exp, log, cos, sin,
@@ -306,4 +307,4 @@ register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
                           'acos-math', 'atan-math', 'isnan-math', 'isinf-math', 'min-atom', 'max-atom',
                           'foldl-atom', 'map-atom', 'filter-atom','current-time','format-time', library, exists_file,
                           import_prolog_function, 'Predicate', callPredicate, assertaPredicate, assertzPredicate, retractPredicate,
-                          'add-translator-rule!', 'remove-translator-rule!', argv]).
+                          'add-translator-rule!', 'remove-translator-rule!', argv, 'memoize!']).

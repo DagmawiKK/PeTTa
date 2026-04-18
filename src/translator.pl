@@ -24,9 +24,13 @@ translate_clause(Input, (Head :- BodyConj), ConstrainArgs) :-
                                                nb_setval(F, [fun_meta(Args1, BodyExpr) | Prev]),
                                                translate_expr(BodyExpr, GoalsBody, ExpOut),
                                                (  nonvar(ExpOut) , ExpOut = partial(Base,Bound)
-                                               -> current_predicate(Base/Arity), length(Bound, N), M is (Arity - N) - 1,
-                                                  length(ExtraArgs, M), append([Bound,ExtraArgs,[Out]],CallArgs), Goal =.. [Base|CallArgs],
-                                                  append(GoalsBody,[Goal],FinalGoals), append(Args1,ExtraArgs,HeadArgs)
+                                                -> current_predicate(Base/Arity), length(Bound, N), M is (Arity - N) - 1,
+                                                   length(ExtraArgs, M), append(Bound, ExtraArgs, CallInArgs),
+                                                   ( memo_enabled(Base)
+                                                   -> Goal = cache_call(Base, CallInArgs, Out)
+                                                    ; append(CallInArgs, [Out], DirectArgs),
+                                                      Goal =.. [Base|DirectArgs] ),
+                                                   append(GoalsBody,[Goal],FinalGoals), append(Args1,ExtraArgs,HeadArgs)
                                                ; FinalGoals= GoalsBody , HeadArgs = Args1, Out = ExpOut ),
                                                append(HeadArgs, [Out], FinalArgs),
                                                Head =.. [F|FinalArgs],
@@ -51,11 +55,13 @@ reduce([F|Args], Out) :- nonvar(F), atom(F), fun(F)
                          -> % --- Case 1: callable predicate ---
                             length(Args, N),
                             Arity is N + 1,
-                            ( current_predicate(F/Arity) , \+ (current_op(_, _, F), Arity =< 2)
-                              -> append(Args,[Out],CallArgs),
-                                 Goal =.. [F|CallArgs],
-                                 catch(call(Goal),_,fail)
-                               ; Out = partial(F,Args) )
+                             ( current_predicate(F/Arity) , \+ (current_op(_, _, F), Arity =< 2)
+                               -> ( memo_enabled(F)
+                                  -> catch(cache_call(F, Args, Out), _, fail)
+                                   ; append(Args, [Out], CallArgs),
+                                     Goal =.. [F|CallArgs],
+                                     catch(call(Goal), _, fail) )
+                                ; Out = partial(F,Args) )
                           ; % --- Case 2: partial closure ---
                             compound(F), F = partial(Base, Bound) -> append(Bound, Args, NewArgs),
                                                                      reduce([Base|NewArgs], Out)
@@ -301,7 +307,7 @@ translate_expr([H0|T0], Goals, Out) :-
         ; translate_args(T, GsT, AVs),
           append(GsH, GsT, Inner),
           %Known function => direct call:
-          ( is_list(AVs), 
+          ( is_list(AVs),
             ( atom(HV), fun(HV), Fun = HV, AllAVs = AVs, IsPartial = false
             ; compound(HV), HV = partial(Fun, Bound), append(Bound,AVs,AllAVs), IsPartial = true
             ) % Check for type definition [:,HV,TypeChain]
@@ -329,9 +335,11 @@ build_call_or_partial(Fun, AVs, Out, Inner, Extra, Goals) :- length(AVs, N),
                                                                -> append(Inner, [Goal|Extra], Goals)
                                                                 ; ( ( current_predicate(Fun/Arity) ; catch(arity(Fun, Arity), _, fail) ),
                                                                      \+ ( current_op(_, _, Fun), Arity =< 2 ) )
-                                                                  -> append(AVs, [Out], Args),
-                                                                     Goal =.. [Fun|Args],
-                                                                     append(Inner, [Goal|Extra], Goals)
+                                                                   -> ( memo_enabled(Fun)
+                                                                       -> Goal = cache_call(Fun, AVs, Out)
+                                                                        ; append(AVs, [Out], DirectArgs),
+                                                                          Goal =.. [Fun|DirectArgs] ),
+                                                                      append(Inner, [Goal|Extra], Goals)
                                                                    ; Out = partial(Fun, AVs),
                                                                      append(Inner, Extra, Goals) ).
 
