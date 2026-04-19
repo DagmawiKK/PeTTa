@@ -1,21 +1,30 @@
 :- use_module(library(dcg/basics)). %blanks/0, number/1, string_without/2
 
-%Generate a MeTTa S-expression string from the Prolog list (inverse parsing):
-swrite(Term, String) :- phrase(swrite_exp(Term), Codes),
-                        string_codes(String, Codes).
-swrite_exp(Var)   --> { var(Var) }, !, "$", { term_to_atom(Var, A), atom_codes(A, Cs) }, Cs.
-swrite_exp(Num)   --> { number(Num) }, !, { number_codes(Num, Cs) }, Cs.
-swrite_exp(Str)   --> { string(Str) }, !, "\"", { string_codes(Str, Cs), escape_quotes(Cs, Es) }, Es, "\"".
-swrite_exp(Atom)  --> { atom(Atom) }, !, atom(Atom).
-swrite_exp([H|T]) --> { \+ is_list([H|T]) }, !, "(", atom(cons), " ", swrite_exp(H), " ", swrite_exp(T), ")".
-swrite_exp([H|T]) --> !, "(", seq([H|T]), ")".
-swrite_exp([])    --> !, "()".
-swrite_exp(Term)  --> { Term =.. [F|Args] }, "(", atom(F), ( { Args == [] } -> [] ; " ", seq(Args) ), ")".
-seq([X])    --> swrite_exp(X).
-seq([X|Xs]) --> swrite_exp(X), " ", seq(Xs).
-escape_quotes([], []).
-escape_quotes([0'"|T], [0'\\,0'"|R]) :- !, escape_quotes(T, R).
-escape_quotes([H|T], [H|R]) :- escape_quotes(T, R).
+%Generate a MeTTa S-expression string from the Prolog list (stream-based, no DCG overhead):
+swrite(Term, String) :- with_output_to(string(String), swrite_to_stream(Term)).
+
+swrite_to_stream(Var)    :- var(Var), !, write('$'), term_to_atom(Var, A), write(A).
+swrite_to_stream(Num)    :- number(Num), !, write(Num).
+swrite_to_stream(Str)    :- string(Str), !, put_char('"'), escape_write_string(Str), put_char('"').
+swrite_to_stream(Atom)   :- atom(Atom), !, write(Atom).
+swrite_to_stream([])     :- !, write('()').
+swrite_to_stream([H|T])  :- \+ is_list([H|T]), !,
+                             put_char('('), write(cons), put_char(' '),
+                             swrite_to_stream(H), put_char(' '),
+                             swrite_to_stream(T), put_char(')').
+swrite_to_stream([H|T])  :- !, put_char('('), swrite_seq([H|T]), put_char(')').
+swrite_to_stream(Term)   :- Term =.. [F|Args],
+                             put_char('('), write(F),
+                             ( Args == [] -> true ; put_char(' '), swrite_seq(Args) ),
+                             put_char(')').
+
+swrite_seq([X])    :- swrite_to_stream(X).
+swrite_seq([X|Xs]) :- swrite_to_stream(X), put_char(' '), swrite_seq(Xs).
+
+escape_write_string(S) :- string_codes(S, Cs), escape_write_codes(Cs).
+escape_write_codes([]).
+escape_write_codes([0'"|T]) :- !, put_char('\\'), put_char('"'), escape_write_codes(T).
+escape_write_codes([C|T])  :- put_code(C), escape_write_codes(T).
 
 %Read S string or atom, extract codes, and apply DCG (parsing):
 sread(S, T) :- ( atom_string(A, S),
