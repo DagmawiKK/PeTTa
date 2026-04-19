@@ -1,9 +1,16 @@
 :- dynamic ho_specialization/2.
 
-%Maybe specializes HV(AVs) if not already ongoing, and if specialization fails, nothing changes and specneeded is restored:
-maybe_specialize_call(HV, AVs, Out, Goal) :- setup_call_cleanup( (catch(nb_getval(specneeded,Prev),_,Prev = []), nb_setval(specneeded,false)),
-                                                                 specialize_call(HV, AVs, Out, Goal),
-                                                                 (Prev == true -> nb_setval(specneeded,Prev)) ).
+%Maybe specializes HV(AVs) — fast-fail if HV has no stored meta-clauses or no specializable args:
+maybe_specialize_call(HV, AVs, Out, Goal) :-
+    atom(HV),
+    catch(nb_getval(HV, MetaList0), _, fail),
+    MetaList0 \= [],
+    once((member(AV, AVs), nonvar(AV), specializable_arg(AV))),
+    setup_call_cleanup(
+        (catch(nb_getval(specneeded,Prev),_,Prev = []), nb_setval(specneeded,false)),
+        specialize_call(HV, MetaList0, AVs, Out, Goal),
+        (Prev == true -> nb_setval(specneeded,Prev) ; true)
+    ).
 
 % Helper predicate to replace all variables with 'VAR'
 replace_vars_with_var(Var, 'VAR') :- var(Var), !.
@@ -11,8 +18,8 @@ replace_vars_with_var(Term, NewTerm) :- (is_list(Term) -> maplist(replace_vars_w
                                                         ;  Term = NewTerm).
 
 %Specialize a call by creating and translating a specialized version of the MeTTa code:
-specialize_call(HV, AVs, Out, Goal) :- %1. Retrieve a copy of all meta-clauses stored for HV:
-                                       catch(nb_getval(HV, MetaList0), _, fail),
+specialize_call(HV, MetaList0, AVs, Out, Goal) :-
+                                       %1. Copy all meta-clauses:
                                        copy_term(MetaList0, MetaList),
                                        %2. Copy all clause variables eligible for specialization across all meta-clauses:
                                        bagof(HoVar, ArgsNorm^BodyExpr^HoBinds^HoBindsPerArg^
