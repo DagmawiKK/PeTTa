@@ -7,7 +7,7 @@ constrain_args([F, A, B], Out, Goals) :- nonvar(F),
                                          Out = [A1|B1],
                                          append(G1, G2, Goals), !.
 constrain_args([F|Args], Var, Goals) :- atom(F),
-                                        fun(F), !,
+                                        is_fun(F), !,
                                         translate_expr([F|Args], GoalsExpr, Var),
                                         flatten(GoalsExpr, Goals).
 constrain_args(In, Out, Goals) :- maplist(constrain_args, In, Out, NestedGoalsList),
@@ -46,8 +46,14 @@ goals_list_to_conj([], true)      :- !.
 goals_list_to_conj([G], G)        :- !.
 goals_list_to_conj([G|Gs], (G,R)) :- goals_list_to_conj(Gs, R).
 
+% Negative cache for fun/1: skip straight to failure for atoms already known to not be functions.
+% register_fun/1 retracts not_fun/1 entries when a function is newly registered.
+is_fun(F) :- not_fun(F), !, fail.
+is_fun(F) :- fun(F), !.
+is_fun(F) :- assertz(not_fun(F)), fail.
+
 % Runtime dispatcher: call F if it's a registered fun/1, else keep as list:
-reduce([F|Args], Out) :- nonvar(F), atom(F), fun(F)
+reduce([F|Args], Out) :- nonvar(F), atom(F), is_fun(F)
                          -> % --- Case 1: callable predicate ---
                             length(Args, N),
                             Arity is N + 1,
@@ -69,6 +75,15 @@ agg_reduce(AF, Acc, Val, NewAcc) :- reduce([AF, Acc, Val], NewAcc).
 %Combined expr translation to goals list
 translate_expr_to_conj(Input, Conj, Out) :- translate_expr(Input, Goals, Out),
                                             goals_list_to_conj(Goals, Conj).
+
+%Memoized type-chain lookup — avoids repeated space queries for the same function:
+:- dynamic type_chains_cache/2.
+get_type_chains(Fun, TypeChains) :-
+    ( type_chains_cache(Fun, TypeChains)
+      -> true
+      ;  findall(TypeChain, catch(match('&self', [':', Fun, TypeChain], TypeChain, TypeChain), _, fail), TypeChains),
+         assertz(type_chains_cache(Fun, TypeChains))
+    ).
 
 %Special stream operation rewrite rules before main translation
 rewrite_streamops(['trace!', Arg1, Arg2],
@@ -94,7 +109,7 @@ safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) -> rewr
 translate_expr(X, [], X)          :- ((var(X) ; atomic(X)) ; X = partial(_,_)), !.
 translate_expr([H0|T0], Goals, Out) :-
         safe_rewrite_streamops([H0|T0],[H|T]),
-        translate_expr(H, GsH, HV),
+        ( atomic(H) -> HV = H, GsH = [] ; translate_expr(H, GsH, HV) ),
         %--- Translator rules ---:
         ( nonvar(HV), translator_rule(HV) -> ( catch(match('&self', [':', HV, TypeChain], TypeChain, TypeChain), _, fail)
                                                -> TypeChain = [->|Xs],
@@ -213,25 +228,63 @@ translate_expr([H0|T0], Goals, Out) :-
              append(Tmp1, GsGF, Tmp2),
              append(Tmp2, [ConjInit, foldall(agg_reduce(AFV, V), reduce(GenList, V), Init, Out)], Goals)
         %--- Higher-order functions with pseudo-lambdas and lambdas ---:
-        ; HV == 'foldl-atom', T = [List, Init, AccVar, XVar, Body]
+        %
+        % For foldl-atom/map-atom/filter-atom we assertz a named helper predicate
+        % at translation time instead of emitting a YALL '>>' closure.  This
+        % eliminates the copy_term_nat call that YALL performs on every list
+        % element; Prolog's normal clause-lookup mechanism freshens variables for
+        % free.  Free variables from the enclosing scope become extra head args
+        % (captured exactly as the '|->' lambda handler does).
+        ;
+        HV == 'foldl-atom', T = [List, Init, AccVar, XVar, Body]
           -> translate_expr_to_conj(List, ConjList, L),
              translate_expr_to_conj(Init, ConjInit, InitV),
              translate_expr_to_conj(Body, BodyConj, BG),
              exclude(==(true), [ConjList, ConjInit], CleanConjs),
              append(GsH, CleanConjs, GsMid),
-             append(GsMid, [foldl([XVar, AccVar, NewAcc]>>(BodyConj, ( number(BG) -> NewAcc is BG ; NewAcc = BG )), L, InitV, Out)], Goals)
+             term_variables(XVar-AccVar, LambdaPs),
+             term_variables(Body, AllBVars),
+             exclude({LambdaPs}/[V]>>memberchk_eq(V, LambdaPs), AllBVars, FreeVars),
+             next_lambda_name(HelpF),
+             append(FreeVars, [XVar, AccVar, NewAcc], HArgs),
+             HHead =.. [HelpF|HArgs],
+             HBody = (BodyConj, (number(BG) -> NewAcc is BG ; NewAcc = BG)),
+             assertz((HHead :- HBody)),
+             ( FreeVars == [] -> FoldCall = foldl(HelpF, L, InitV, Out)
+             ; HTerm =.. [HelpF|FreeVars], FoldCall = foldl(HTerm, L, InitV, Out) ),
+             append(GsMid, [FoldCall], Goals)
         ; HV == 'map-atom', T = [List, XVar, Body]
           -> translate_expr_to_conj(List, ConjList, L),
              translate_expr_to_conj(Body, BodyCallConj, BodyCall),
              exclude(==(true), [ConjList], CleanConjs),
              append(GsH, CleanConjs, GsMid),
-             append(GsMid, [maplist([XVar, Y]>>(BodyCallConj, ( number(BodyCall) -> Y is BodyCall ; Y = BodyCall )), L, Out)], Goals)
+             term_variables(XVar, XVs),
+             term_variables(Body, AllBVars),
+             exclude({XVs}/[V]>>memberchk_eq(V, XVs), AllBVars, FreeVars),
+             next_lambda_name(HelpF),
+             append(FreeVars, [XVar, MOut], HArgs),
+             HHead =.. [HelpF|HArgs],
+             HBody = (BodyCallConj, (number(BodyCall) -> MOut is BodyCall ; MOut = BodyCall)),
+             assertz((HHead :- HBody)),
+             ( FreeVars == [] -> MapCall = maplist(HelpF, L, Out)
+             ; HTerm =.. [HelpF|FreeVars], MapCall = maplist(HTerm, L, Out) ),
+             append(GsMid, [MapCall], Goals)
         ; HV == 'filter-atom', T = [List, XVar, Cond]
           -> translate_expr_to_conj(List, ConjList, L),
              translate_expr_to_conj(Cond, CondConj, CondGoal),
              exclude(==(true), [ConjList], CleanConjs),
              append(GsH, CleanConjs, GsMid),
-             append(GsMid, [include([XVar]>>(CondConj, CondGoal), L, Out)], Goals)
+             term_variables(XVar, XVs),
+             term_variables(Cond, AllCVars),
+             exclude({XVs}/[V]>>memberchk_eq(V, XVs), AllCVars, FreeVars),
+             next_lambda_name(HelpF),
+             append(FreeVars, [XVar], HArgs),
+             HHead =.. [HelpF|HArgs],
+             HBody = (CondConj, CondGoal),
+             assertz((HHead :- HBody)),
+             ( FreeVars == [] -> FilterCall = include(HelpF, L, Out)
+             ; HTerm =.. [HelpF|FreeVars], FilterCall = include(HTerm, L, Out) ),
+             append(GsMid, [FilterCall], Goals)
         ; HV == '|->', T = [Args, Body] -> next_lambda_name(F),
                                            % find free (non-argument) variables in Body
                                            term_variables(Body, AllVars),
@@ -302,10 +355,10 @@ translate_expr([H0|T0], Goals, Out) :-
           append(GsH, GsT, Inner),
           %Known function => direct call:
           ( is_list(AVs), 
-            ( atom(HV), fun(HV), Fun = HV, AllAVs = AVs, IsPartial = false
+            ( atom(HV), is_fun(HV), Fun = HV, AllAVs = AVs, IsPartial = false
             ; compound(HV), HV = partial(Fun, Bound), append(Bound,AVs,AllAVs), IsPartial = true
             ) % Check for type definition [:,HV,TypeChain]
-            -> findall(TypeChain, catch(match('&self', [':', Fun, TypeChain], TypeChain, TypeChain), _, fail), TypeChains),
+            -> get_type_chains(Fun, TypeChains),
                ( TypeChains \= []
                  -> maplist({Fun,T,GsH,IsPartial,Bound,Out}/[TypeChain,BranchGoal]>>(
                             typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchGoal)), TypeChains, Branches),
@@ -313,7 +366,7 @@ translate_expr([H0|T0], Goals, Out) :-
                     Goals = [Disj]
               ; build_call_or_partial(Fun, AllAVs, Out, Inner, [], Goals))
           %Literals (numbers, strings, etc.), known non-function atom => data:
-          ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ fun(HV) ) -> Out = [HV|AVs],
+          ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ is_fun(HV) ) -> Out = [HV|AVs],
                                                                   Goals = Inner
           %Plain data list: evaluate inner fun-sublists
           ; is_list(HV) -> eval_data_term(HV, Gd, HV1),
@@ -361,14 +414,15 @@ translate_args_by_type([A|As], [T|Ts], GsOut, [AV|AVs]) :-
 
 %Handle data list:
 eval_data_term(X, [], X) :- (var(X); atomic(X)), !.
-eval_data_term([F|As], Goals, Val) :- ( atom(F), fun(F) -> translate_expr([F|As], Goals, Val)
+eval_data_term([F|As], Goals, Val) :- ( atom(F), is_fun(F) -> translate_expr([F|As], Goals, Val)
                                                          ; eval_data_list([F|As], Goals, Val) ).
 
 %Handle data list entry:
 eval_data_list([], [], []).
-eval_data_list([E|Es], Goals, [V|Vs]) :- ( is_list(E) -> eval_data_term(E, G1, V) ; V = E, G1 = [] ),
-                                         eval_data_list(Es, G2, Vs),
-                                         append(G1, G2, Goals).
+eval_data_list([E|Es], Goals, [V|Vs]) :-
+    ( nonvar(E), E = [_|_] -> eval_data_term(E, G1, V) ; V = E, G1 = [] ),
+    eval_data_list(Es, G2, Vs),
+    ( G1 == [] -> Goals = G2 ; append(G1, G2, Goals) ).
 
 
 %Convert let* to recusrive let:
@@ -397,9 +451,11 @@ translate_case([[K,VExpr]|Rs], Kv, Out, Goal, KGo) :- translate_expr_to_conj(VEx
 
 %Translate arguments recursively:
 translate_args([], [], []).
-translate_args([X|Xs], Goals, [V|Vs]) :- translate_expr(X, G1, V),
-                                         translate_args(Xs, G2, Vs),
-                                         append(G1, G2, Goals).
+translate_args([X|Xs], Goals, [V|Vs]) :-
+    ( (var(X) ; atomic(X)) -> V = X, G1 = []
+    ; translate_expr(X, G1, V) ),
+    translate_args(Xs, G2, Vs),
+    ( G1 == [] -> Goals = G2 ; append(G1, G2, Goals) ).
 
 %Build A ; B ; C ... from a list:
 disj_list([G], G).

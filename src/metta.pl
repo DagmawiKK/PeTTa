@@ -291,7 +291,9 @@ importer_helper(Space, File) :- atom_string(File, SFile),
 
 %%% Registration: %%%
 :- dynamic fun/1.
-register_fun(N) :- (fun(N) -> true ; assertz(fun(N))).
+:- dynamic not_fun/1.
+register_fun(N) :- ( fun(N) -> true
+                   ; retractall(not_fun(N)), assertz(fun(N)) ).
 :- maplist(register_fun, [superpose, empty, let, 'let*', '+','-','*','/', '%', min, max, 'change-state!', 'get-state', 'bind!',
                           '<','>','==', '!=', '=', '=?', '<=', '>=', and, or, xor, implies, not, sqrt, exp, log, cos, sin,
                           'first-from-pair', 'second-from-pair', 'car-atom', 'cdr-atom', 'unique-atom', 'alpha-unique-atom',
