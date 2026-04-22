@@ -1,30 +1,54 @@
 :- use_module(library(dcg/basics)). %blanks/0, number/1, string_without/2
 
-%Generate a MeTTa S-expression string from the Prolog list (stream-based, no DCG overhead):
+%Generate a MeTTa S-expression string from the Prolog list (stream-based):
 swrite(Term, String) :- with_output_to(string(String), swrite_to_stream(Term)).
 
-swrite_to_stream(Var)    :- var(Var), !, write('$'), term_to_atom(Var, A), write(A).
-swrite_to_stream(Num)    :- number(Num), !, write(Num).
-swrite_to_stream(Str)    :- string(Str), !, put_char('"'), escape_write_string(Str), put_char('"').
-swrite_to_stream(Atom)   :- atom(Atom), !, write(Atom).
-swrite_to_stream([])     :- !, write('()').
-swrite_to_stream([H|T])  :- \+ is_list([H|T]), !,
-                             put_char('('), write(cons), put_char(' '),
-                             swrite_to_stream(H), put_char(' '),
-                             swrite_to_stream(T), put_char(')').
-swrite_to_stream([H|T])  :- !, put_char('('), swrite_seq([H|T]), put_char(')').
-swrite_to_stream(Term)   :- Term =.. [F|Args],
-                             put_char('('), write(F),
-                             ( Args == [] -> true ; put_char(' '), swrite_seq(Args) ),
-                             put_char(')').
+% Unified dispatch - single entry point with explicit type dispatch
+swrite_to_stream(Term) :-
+    term_type(Term, Type),
+    swrite_by_type(Type, Term).
+
+% Type dispatch table using arg/3 pattern
+term_type(Term, var) :- var(Term), !.
+term_type(Term, number) :- number(Term), !.
+term_type(Term, string) :- string(Term), !.
+term_type(Term, atom) :- atom(Term), !.
+term_type([], empty_list) :- !.
+term_type([H|T], cons) :- \+ is_list([H|T]), !.
+term_type([_|_], list) :- !.
+term_type(_, compound).
+
+% Type-specific writers
+swrite_by_type(var, Var) :-
+    write('$'), term_to_atom(Var, A), write(A).
+swrite_by_type(number, Num) :-
+    write(Num).
+swrite_by_type(string, Str) :-
+    put_char('"'), escape_write_string(Str), put_char('"').
+swrite_by_type(atom, Atom) :-
+    write(Atom).
+swrite_by_type(empty_list, _) :-
+    write('()').
+swrite_by_type(cons, [H|T]) :-
+    put_char('('), write(cons), put_char(' '),
+    swrite_to_stream(H), put_char(' '),
+    swrite_to_stream(T), put_char(')').
+swrite_by_type(list, List) :-
+    put_char('('), swrite_seq(List), put_char(')').
+swrite_by_type(compound, Term) :-
+    Term =.. [F|Args],
+    put_char('('), write(F),
+    ( Args == [] -> true ; put_char(' '), swrite_seq(Args) ),
+    put_char(')').
 
 swrite_seq([X])    :- swrite_to_stream(X).
 swrite_seq([X|Xs]) :- swrite_to_stream(X), put_char(' '), swrite_seq(Xs).
 
-escape_write_string(S) :- string_codes(S, Cs), escape_write_codes(Cs).
-escape_write_codes([]).
-escape_write_codes([0'"|T]) :- !, put_char('\\'), put_char('"'), escape_write_codes(T).
-escape_write_codes([C|T])  :- put_code(C), escape_write_codes(T).
+escape_write_string(S) :- string_chars(S, Chars), escape_write_chars(Chars).
+escape_write_chars([]).
+escape_write_chars(['"'|T]) :- !, put_char('\\'), put_char('"'), escape_write_chars(T).
+escape_write_chars(['\\'|T]) :- !, put_char('\\'), put_char('\\'), escape_write_chars(T).
+escape_write_chars([C|T]) :- put_char(C), escape_write_chars(T).
 
 %Read S string or atom, extract codes, and apply DCG (parsing):
 sread(S, T) :- ( atom_string(A, S),
