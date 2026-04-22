@@ -46,8 +46,9 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
 
 %Cyclic term guard: only needed when the space contains non-ground atoms.
 %When all atoms in a space are ground, unification cannot create cyclic terms.
+%Also skip check for atomic terms (can never be cyclic).
 acyclic_guard(Space, OutPattern) :-
-    ( space_has_nonground(Space)
+    ( compound(OutPattern), space_has_nonground(Space)
       -> acyclic_term(OutPattern)
       ; true ).
 

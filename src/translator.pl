@@ -67,8 +67,7 @@ reduce([F|Args], Out) :- nonvar(F), atom(F), is_fun(F)
                             compound(F), F = partial(Base, Bound) -> append(Bound, Args, NewArgs),
                                                                      reduce([Base|NewArgs], Out)
                           ; % --- Case 3: leave unevaluated ---
-                            Out = [F|Args],
-                            acyclic_term(Out).
+                            Out = [F|Args].
 
 %Calling reduce from aggregate function foldall needs this argument wrapping
 agg_reduce(AF, Acc, Val, NewAcc) :- reduce([AF, Acc, Val], NewAcc).
@@ -142,9 +141,7 @@ translate_expr_dispatch(test, T, GsH, Goals, Out) :-
     Goal1 = ( findall(Val, Conj, Results),
               (Results = [Actual] -> true
                                    ; Actual = Results ) ),
-    append(GsH, [Goal1], G1),
-    append(G1, GsE, G2),
-    append(G2, [test(Actual, ExpVal, Out)], Goals).
+    append([GsH, [Goal1], GsE, [test(Actual, ExpVal, Out)]], Goals).
 translate_expr_dispatch(once, T, GsH, Goals, Out) :-
     T = [X], !,
     translate_expr_to_conj(X, Conj, Out),
@@ -155,8 +152,7 @@ translate_expr_dispatch(hyperpose, T, GsH, Goals, Out) :-
       -> build_hyperpose_branches(L, Branches),
          append(GsH, [concurrent_and(member((Goal,Res), Branches), (call(Goal), Out = Res))], Goals)
       ; translate_expr(L, GsL, LV),
-        append(GsH, GsL, Inner),
-        append(Inner, [hyperpose_runtime(LV, Out)], Goals) ).
+        append([GsH, GsL, [hyperpose_runtime(LV, Out)]], Goals) ).
 translate_expr_dispatch(with_mutex, T, GsH, Goals, Out) :-
     T = [M, X], !,
     translate_expr_to_conj(X, Conj, Out),
@@ -174,8 +170,7 @@ translate_expr_dispatch(prog1, T, GsH, Goals, Out) :- !,
     T = [First|Rest],
     translate_expr(First, GsF, Out),
     translate_args(Rest, GsRest, _),
-    append(GsH, GsF, Tmp1),
-    append(Tmp1, GsRest, Goals).
+    append([GsH, GsF, GsRest], Goals).
 %--- Conditionals ---:
 translate_expr_dispatch(if, T, GsH, Goals, Out) :-
     T = [Cond, Then], !,
@@ -244,8 +239,7 @@ translate_expr_dispatch('forall', T, GsH, Goals, Out) :-
     TestList = [TFHV, V],
     goals_list_to_conj(GsGF, GPre),
     GenGoal = (GPre, reduce(GenList, V)),
-    append(GsH, GsTF, Tmp0),
-    append(Tmp0, [( forall(GenGoal, ( reduce(TestList, Truth), Truth == true )) -> Out = true ; Out = false )], Goals).
+    append([GsH, GsTF, [( forall(GenGoal, ( reduce(TestList, Truth), Truth == true )) -> Out = true ; Out = false )]], Goals).
 translate_expr_dispatch('foldall', T, GsH, Goals, Out) :-
     T = [AF, GF, InitS], !,
     translate_expr_to_conj(InitS, ConjInit, Init),
@@ -260,9 +254,7 @@ translate_expr_dispatch('foldall', T, GsH, Goals, Out) :-
                      GenList = [GFHV|GFAv]
                    ; translate_expr(GF, GsGF, GFHV),
                      GenList = [GFHV] ),
-    append(GsH, GsAF, Tmp1),
-    append(Tmp1, GsGF, Tmp2),
-    append(Tmp2, [ConjInit, foldall(agg_reduce(AFV, V), reduce(GenList, V), Init, Out)], Goals).
+    append([GsH, GsAF, GsGF, [ConjInit, foldall(agg_reduce(AFV, V), reduce(GenList, V), Init, Out)]], Goals).
 %--- Higher-order functions with named helper predicates (no YALL closures) ---:
 translate_expr_dispatch('foldl-atom', T, GsH, Goals, Out) :-
     T = [List, Init, AccVar, XVar, Body], !,
@@ -358,26 +350,23 @@ translate_expr_dispatch(translatePredicate, T, GsH, Goals, _Out) :-
     Expr = [S|Args],
     translate_args(Args, GsArgs, ArgsOut),
     Goal =.. [S|ArgsOut],
-    append(GsH, GsArgs, Inner),
-    append(Inner, [Goal], Goals).
+    append([GsH, GsArgs, [Goal]], Goals).
 %--- Manual dispatch options ---:
 translate_expr_dispatch(call, T, GsH, Goals, Out) :-
     T = [Expr], !,
     Expr = [F|Args],
     translate_args(Args, GsArgs, ArgsOut),
-    append(GsH, GsArgs, Inner),
     append(ArgsOut, [Out], CallArgs),
     Goal =.. [F|CallArgs],
-    append(Inner, [Goal], Goals).
+    append([GsH, GsArgs, [Goal]], Goals).
 translate_expr_dispatch(reduce, T, GsH, Goals, Out) :-
     T = [Expr], !,
     ( var(Expr) -> translate_expr(Expr, GsH, ExprOut),
                    Goals = [reduce(ExprOut, Out)|GsH]
                  ; Expr = [F|Args],
                    translate_args(Args, GsArgs, ArgsOut),
-                   append(GsH, GsArgs, Inner),
                    ExprOut = [F|ArgsOut],
-                   append(Inner, [reduce(ExprOut, Out)], Goals) ).
+                   append([GsH, GsArgs, [reduce(ExprOut, Out)]], Goals) ).
 translate_expr_dispatch(eval, T, GsH, Goals, Out) :-
     T = [Arg], !,
     Goal = eval(Arg, Out),
