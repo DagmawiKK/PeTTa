@@ -1,4 +1,14 @@
 %Pattern matching, structural and functional/relational constraints on arguments:
+:- ( catch(nb_getval(builtin_peano, _), _, nb_setval(builtin_peano, true)), true ).
+
+constrain_args(Input, peano_int(0), []) :-
+    nonvar(Input), Input == 'Z',
+    catch(nb_getval(builtin_peano, true), _, fail), !.
+constrain_args(Input, peano_int(N), Goals) :-
+    nonvar(Input), Input = [H|T], nonvar(H), H == 'S', T = [X],
+    catch(nb_getval(builtin_peano, true), _, fail), !,
+    constrain_args(X, InnerOut, InnerGoals),
+    Goals = [integer(N), N > 0, M is N - 1, InnerOut = peano_int(M) | InnerGoals].
 constrain_args(X, X, []) :- (var(X); atomic(X)), !.
 constrain_args([F, A, B], Out, Goals) :- nonvar(F),
                                          F == cons,
@@ -99,6 +109,7 @@ safe_rewrite_streamops(In, Out) :- ( compound(In), In = [Op|_], atom(Op) -> rewr
                                                                           ; Out = In).
 
 %Turn MeTTa code S-expression into goals list:
+translate_expr(X, [], peano_int(0)) :- nonvar(X), X == 'Z', catch(nb_getval(builtin_peano, true), _, fail), !.
 translate_expr(X, [], X)          :- ((var(X) ; atomic(X)) ; X = partial(_,_)), !.
 translate_expr([H0|T0], Goals, Out) :-
         safe_rewrite_streamops([H0|T0],[H|T]),
@@ -259,6 +270,11 @@ translate_expr([H0|T0], Goals, Out) :-
                                            ( FreeVars == [] -> Out = F
                                                              ; Out = partial(F, FreeVars) )
         %--- Spaces ---:
+        % ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [Space, Atom] ->
+%                                                            translate_expr(Atom, GsAtom, AtomOut),
+        %                                                            Goal =.. [HV, Space, AtomOut, Out],
+        %                                                            append(GsH, GsAtom, Inner),
+        %                                                            append(Inner, [Goal], Goals)
         ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [_,_] -> append(T, [Out], RawArgs),
                                                                    Goal =.. [HV|RawArgs],
                                                                    append(GsH, [Goal], Goals)
@@ -305,6 +321,20 @@ translate_expr([H0|T0], Goals, Out) :-
                        (Exception = error(Type, Ctx) -> Out = ['Error', Type, Ctx]
                                                       ; Out = ['Error', Exception])),
           append(Inner, [Goal], Goals)
+        ; catch(nb_getval(builtin_peano, true), _, fail), HV == 'S', T = [Arg] ->
+            translate_expr(Arg, GsArg, ArgOut),
+            append(GsH, GsArg, Inner),
+            ( nonvar(ArgOut), ArgOut = peano_int(K), integer(K) ->
+                N is K + 1, Out = peano_int(N), Goals = Inner
+            ;
+                Out = peano_int(N),
+                append(Inner, [ArgOut = peano_int(K2), N is K2 + 1], Goals)
+            )
+        ; catch(nb_getval(builtin_peano, true), _, fail),
+          (HV == fromNumber ; HV == 'peano.fromNumber'),
+          T = [Arg], number(Arg) ->
+            Out = peano_int(Arg),
+            Goals = GsH
         %--- Automatic 'smart' dispatch, translator deciding when to create a predicate call, data list, or dynamic dispatch: ---
         ; translate_args(T, GsT, AVs),
           append(GsH, GsT, Inner),
@@ -357,6 +387,10 @@ typed_functioncall_branch(Fun, TypeChain, T, GsH, IsPartial, Bound, Out, BranchG
 
 %Selectively apply translate_args for non-Expression args while Expression args stay as data input:
 translate_args_by_type([], _, [], []) :- !.
+% Builtin Peano: lower numeric literal typed as Nat to peano_int at translation time
+translate_args_by_type([A|As], ['Nat'|Ts], GsOut, [peano_int(A)|AVs]) :-
+    catch(nb_getval(builtin_peano, true), _, fail), number(A), !,
+    translate_args_by_type(As, Ts, GsOut, AVs).
 translate_args_by_type([A|As], [T|Ts], GsOut, [AV|AVs]) :-
                       ( T == 'Expression' -> AV = A, GsA = []
                                            ; translate_expr(A, GsA1, AV),
