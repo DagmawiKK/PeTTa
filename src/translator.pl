@@ -1,4 +1,5 @@
 %Pattern matching, structural and functional/relational constraints on arguments:
+:- use_module(library(clpfd)).
 :- ( catch(nb_getval(builtin_peano, _), _, nb_setval(builtin_peano, true)), true ).
 
 constrain_args(Input, peano_int(0), []) :-
@@ -8,7 +9,14 @@ constrain_args(Input, peano_int(N), Goals) :-
     nonvar(Input), Input = [H|T], nonvar(H), H == 'S', T = [X],
     catch(nb_getval(builtin_peano, true), _, fail), !,
     constrain_args(X, InnerOut, InnerGoals),
-    Goals = [integer(N), N > 0, M is N - 1, InnerOut = peano_int(M) | InnerGoals].
+    Goals = [ ( integer(N)
+                -> N > 0,
+                   M is N - 1
+                ;  N #> 0,
+                   M #= N - 1
+              ),
+              InnerOut = peano_int(M)
+            | InnerGoals ].
 constrain_args(X, X, []) :- (var(X); atomic(X)), !.
 constrain_args([F, A, B], Out, Goals) :- nonvar(F),
                                          F == cons,
@@ -275,10 +283,19 @@ translate_expr([H0|T0], Goals, Out) :-
         %                                                            Goal =.. [HV, Space, AtomOut, Out],
         %                                                            append(GsH, GsAtom, Inner),
         %                                                            append(Inner, [Goal], Goals)
-        ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [_,_] -> append(T, [Out], RawArgs),
-                                                                   Goal =.. [HV|RawArgs],
-                                                                   append(GsH, [Goal], Goals)
-        ; HV == match, T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
+       % ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [_,_] -> append(T, [Out], RawArgs),
+        %                                                           Goal =.. [HV|RawArgs],
+         %                                                          append(GsH, [Goal], Goals)
+                  ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [Space, Atom] ->
+              ( nonvar(Atom), Atom = [AtomH|_], (AtomH == '=' ; AtomH == ':')
+                -> Goal =.. [HV, Space, Atom, Out],
+                   append(GsH, [Goal], Goals)
+                ; translate_expr(Atom, GsAtom, AtomOut),
+                  Goal =.. [HV, Space, AtomOut, Out],
+                  append(GsH, GsAtom, Inner),
+                  append(Inner, [Goal], Goals)
+              )
+         ; HV == match, T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
                                                      translate_expr(Body, GsB, Out),
                                                      append(G1, [match(S, Pattern, Out, Out)], G2),
                                                      append(G2, GsB, Goals)
@@ -323,12 +340,23 @@ translate_expr([H0|T0], Goals, Out) :-
           append(Inner, [Goal], Goals)
         ; catch(nb_getval(builtin_peano, true), _, fail), HV == 'S', T = [Arg] ->
             translate_expr(Arg, GsArg, ArgOut),
-            append(GsH, GsArg, Inner),
             ( nonvar(ArgOut), ArgOut = peano_int(K), integer(K) ->
+                K >= 0,
+                append(GsH, GsArg, Inner),
                 N is K + 1, Out = peano_int(N), Goals = Inner
             ;
                 Out = peano_int(N),
-                append(Inner, [ArgOut = peano_int(K2), N is K2 + 1], Goals)
+                append(GsH,
+                       [ ArgOut = peano_int(K2),
+                         ( integer(K2)
+                           -> K2 >= 0
+                           ;  K2 #>= 0 ),
+                         ( integer(K2)
+                           -> N is K2 + 1
+                           ;  N #= K2 + 1 )
+                       ],
+                       Inner),
+                append(Inner, GsArg, Goals)
             )
         ; catch(nb_getval(builtin_peano, true), _, fail),
           (HV == fromNumber ; HV == 'peano.fromNumber'),
