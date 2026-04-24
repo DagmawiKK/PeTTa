@@ -266,23 +266,10 @@ translate_expr([H0|T0], Goals, Out) :-
                                            ( FreeVars == [] -> Out = F
                                                              ; Out = partial(F, FreeVars) )
         %--- Spaces ---:
-        % ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [Space, Atom] ->
-%                                                            translate_expr(Atom, GsAtom, AtomOut),
-        %                                                            Goal =.. [HV, Space, AtomOut, Out],
-        %                                                            append(GsH, GsAtom, Inner),
-        %                                                            append(Inner, [Goal], Goals)
-       % ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [_,_] -> append(T, [Out], RawArgs),
-        %                                                           Goal =.. [HV|RawArgs],
-         %                                                          append(GsH, [Goal], Goals)
-                  ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [Space, Atom] ->
-              ( nonvar(Atom), Atom = [AtomH|_], (AtomH == '=' ; AtomH == ':')
-                -> Goal =.. [HV, Space, Atom, Out],
-                   append(GsH, [Goal], Goals)
-                ; translate_expr(Atom, GsAtom, AtomOut),
-                  Goal =.. [HV, Space, AtomOut, Out],
-                  append(GsH, GsAtom, Inner),
-                  append(Inner, [Goal], Goals)
-              )
+        ; ( HV == 'add-atom' ; HV == 'remove-atom' ), T = [_,_] ->
+            append(T, [Out], RawArgs),
+            Goal =.. [HV|RawArgs],
+            append(GsH, [Goal], Goals)
          ; HV == match, T = [Space, Pattern, Body] -> translate_expr(Space, G1, S),
                                                      translate_expr(Body, GsB, Out),
                                                      append(G1, [match(S, Pattern, Out, Out)], G2),
