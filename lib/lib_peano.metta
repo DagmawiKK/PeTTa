@@ -4,3 +4,7 @@
           true))
 
 !(peano-bootstrap ())
+!(import_prolog_function nat-add-atom)
+!(import_prolog_function nat-remove-atom)
+!(import_prolog_function nat-match)
+!(import_prolog_function nat-has-atom)
