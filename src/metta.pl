@@ -26,8 +26,13 @@ library(X, Y, Path) :- library_path(Base), atomic_list_concat([Base, '/../', X, 
 
 %%% Representation and parsing conversions: %%%
 id(X, X).
-repr(Term, R) :- swrite(Term, R).
-repra(Term, R) :- term_to_atom(Term, R).
+present_term(Term, Presented) :-
+    ( metta_present_term(Term, Presented0)
+    -> Presented = Presented0
+    ; Presented = Term
+    ).
+repr(Term, R) :- present_term(Term, Presented), swrite(Presented, R).
+repra(Term, R) :- present_term(Term, Presented), term_to_atom(Presented, R).
 parse(Str, R) :- sread(Str, R).
 
 %%% Arithmetic & Comparison: %%%
@@ -187,15 +192,18 @@ get_type_candidate(X, T) :- match('&self', [':',X,T], T, _).
 'is-space'(A,R) :- atom(A), atom_concat('&', _, A) -> R=true ; R=false.
 
 %%% Diagnostics / Testing: %%%
-'println!'(Arg, true) :- swrite(Arg, RArg),
+'println!'(Arg, true) :- present_term(Arg, Presented),
+                         swrite(Presented, RArg),
                          format('~w~n', [RArg]).
 
 'readln!'(Out) :- read_line_to_string(user_input, Str),
                   sread(Str, Out).
 
 test(A,B,true) :- (A =@= B -> E = '✅' ; E = '❌'),
-                  swrite(A, RA),
-                  swrite(B, RB),
+                  present_term(A, PA),
+                  present_term(B, PB),
+                  swrite(PA, RA),
+                  swrite(PB, RB),
                   format("is ~w, should ~w. ~w ~n", [RA, RB, E]),
                   (A =@= B -> true ; halt(1)).
 
