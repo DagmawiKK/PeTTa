@@ -1,10 +1,24 @@
 %Since both normal add-attom call and function additions needs to add the S-expression:
-add_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
-                               assertz(Term).
+space_mutex_name(Space, Mutex) :-
+    term_hash(Space, Hash),
+    format(atom(Mutex), 'space_mutex_~w', [Hash]).
+
+add_sexp(Space, [Rel|Args]) :-
+    space_mutex_name(Space, Mutex),
+    with_mutex(Mutex,
+               ( Term =.. [Space, Rel | Args],
+                 assertz(Term),
+                 forall(metta_on_space_atom_added(Space, [Rel|Args]), true)
+               )).
 
 %Same but for removal:
-remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
-                                  retractall(Term).
+remove_sexp(Space, [Rel|Args]) :-
+    space_mutex_name(Space, Mutex),
+    with_mutex(Mutex,
+               ( Term =.. [Space, Rel | Args],
+                 retractall(Term),
+                 forall(metta_on_space_atom_removed(Space, [Rel|Args]), true)
+               )).
 
 %Add a function atom:
 'add-atom'(Space, Term, true) :- Term = [=,[FAtom|W],_], !,
@@ -16,7 +30,7 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                  once(translate_clause(Term, Clause)),
                                  assertz(Clause, Ref),
                                  assertz(translated_from(Ref, Term)),
-                                 metta_on_function_changed(FAtom),
+                                 forall(metta_on_function_changed(FAtom), true),
                                  invalidate_specializations(FAtom),
                                  maybe_print_compiled_clause("added function", Term, Clause).
 
@@ -33,10 +47,10 @@ remove_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                          findall(Ref, translated_from(Ref, Term), Refs),
                                          forall(member(Ref, Refs), erase(Ref)),
                                          retractall(translated_from(_, Term)),
-                                         metta_on_function_changed(F),
+                                         forall(metta_on_function_changed(F), true),
                                          invalidate_specializations(F),
                                          ( \+ ( current_predicate(F/A), functor(H2, F, A), clause(H2, _, _) )
-                                           -> retractall(fun(F)), metta_on_function_removed(F) ; true ),
+                                           -> retractall(fun(F)), forall(metta_on_function_removed(F), true) ; true ),
                                          ( Refs = [] -> Removed = false ; Removed = true ).
 
 %Remove all same atoms:
