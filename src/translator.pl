@@ -258,7 +258,10 @@ translate_expr([H0|T0], Goals, Out) :-
                                                      translate_expr(Body, GsB, Out),
                                                      append(G1, [match(S, Pattern, Out, Out)], G2),
                                                      append(G2, GsB, Goals)
-        %--- Predicate to compiled goal ---:
+; HV == 'match-count', T = [Space, Pattern] -> 
+    translate_expr(Space, G1, S),
+    append(G1, [match_count(S, Pattern, Out)], Goals)
+%--- Predicate to compiled goal ---:
         ; HV == translatePredicate, T = [Expr] -> Expr = [S|Args],
                                                   translate_args(Args, GsArgs, ArgsOut),
                                                   Goal =.. [S|ArgsOut],
