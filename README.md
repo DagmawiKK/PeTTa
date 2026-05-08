@@ -55,7 +55,7 @@ Please see the [jupyter-petta-kernel README](https://github.com/trueagi-io/jupyt
 
 A HTTP server running MeTTa code is also available:
 
-**Repository:** [MettaWamJam](https://github.com/jazzbox35/MettaWamJam)
+**Repository:** [MettaWamJam](https://github.com/trueagi-io/MettaWamJam)
 
 Please see the [MettaWamJam README](https://github.com/jazzbox35/MettaWamJam/blob/main/README.md) for detailed installation instructions and usage.
 
