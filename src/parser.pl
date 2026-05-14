@@ -1,4 +1,5 @@
 :- use_module(library(dcg/basics)). %blanks/0, number/1, string_without/2
+:- use_module(extension_pts).
 
 %Generate a MeTTa S-expression string from the Prolog list (inverse parsing):
 swrite(Term, String) :- phrase(swrite_exp(Term), Codes),
@@ -21,7 +22,7 @@ escape_quotes([H|T], [H|R]) :- escape_quotes(T, R).
 sread(S, T) :- ( atom_string(A, S),
                  atom_codes(A, Cs),
                  phrase(sexpr(T, [], _), Cs)
-               -> true ; format(atom(Msg), 'Parse error in form: ~w', [S]), throw(error(syntax_error(Msg), none)) ).
+               -> true ; format(atom(Msg), 'Parse error in form: ~w', [S]), on_parse_error(Msg, here, _) ).
 
 %An S-Expression is a parentheses-nesting of S-Expressions that are either numbers, variables, sttrings, or atoms:
 sexpr(S,E,E)  --> blanks, string_lit(S), blanks, !.

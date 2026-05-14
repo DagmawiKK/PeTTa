@@ -21,6 +21,7 @@ library(X, Y, Path) :- library_path(Base), atomic_list_concat([Base, '/../', X, 
 :- current_prolog_flag(argv, Argv),
    ( member(mork, Argv) -> ensure_loaded([parser, translator, specializer, filereader, '../mork_ffi/morkspaces', spaces])
                          ; ensure_loaded([parser, translator, specializer, filereader, spaces])).
+:- use_module(extension_pts).
 
 %%%%%%%%%% Standard Library for MeTTa %%%%%%%%%%
 
@@ -31,11 +32,11 @@ repra(Term, R) :- term_to_atom(Term, R).
 parse(Str, R) :- sread(Str, R).
 
 %%% Arithmetic & Comparison: %%%
-'+'(A,B,R)  :- R is A + B.
-'-'(A,B,R)  :- R is A - B.
-'*'(A,B,R)  :- R is A * B.
-'/'(A,B,R)  :- R is A / B.
-'%'(A,B,R)  :- R is A mod B.
+'+'(A,B,R)  :- catch(R is A + B, E, on_arithmetic_error(E, '+', [A,B], R)).
+'-'(A,B,R)  :- catch(R is A - B, E, on_arithmetic_error(E, '-', [A,B], R)).
+'*'(A,B,R)  :- catch(R is A * B, E, on_arithmetic_error(E, '*', [A,B], R)).
+'/'(A,B,R)  :- catch(R is A / B, E, on_arithmetic_error(E, '/', [A,B], R)).
+'%'(A,B,R)  :- catch(R is A mod B, E, on_arithmetic_error(E, '%', [A,B], R)).
 '<'(A,B,R)  :- (A<B -> R=true ; R=false).
 '>'(A,B,R)  :- (A>B -> R=true ; R=false).
 '=='(A,B,R) :- (A==B -> R=true ; R=false).

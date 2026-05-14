@@ -1,3 +1,5 @@
+:- use_module(extension_pts).
+
 %Since both normal add-attom call and function additions needs to add the S-expression:
 add_sexp(Space, [Rel|Args]) :- Term =.. [Space, Rel | Args],
                                assertz(Term).

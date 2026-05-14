@@ -1,11 +1,14 @@
 :- use_module(library(readutil)). % read_file_to_string/3
 :- use_module(library(pcre)). % re_replace/4
+:- use_module(extension_pts).
 :- current_prolog_flag(argv, Args), ( (memberchk(silent, Args) ; memberchk('--silent', Args) ; memberchk('-s', Args))
                                       -> assertz(silent(true)) ; assertz(silent(false)) ).
 
 %Read Filename into string S and process it (S holds MeTTa code):
 load_metta_file(Filename, Results) :- load_metta_file(Filename, Results, '&self').
-load_metta_file(Filename, Results, Space) :- read_file_to_string(Filename, S, []),
+load_metta_file(Filename, Results, Space) :- nb_setval(petta_current_file, Filename),
+                                             nb_setval(petta_current_line, 1),
+                                             read_file_to_string(Filename, S, []),
                                              process_metta_string(S, Results, Space).
 
 %Extract function definitions, call invocations, and S-expressions part of &self space:
@@ -42,7 +45,7 @@ process_form(Space, parsed(function, FormStr, Term), []) :- add_sexp(Space, Term
                                                                                      ( Body == true -> Show = Head; Show = (Head :- Body) ),
                                                                                      portray_clause(current_output, Show),
                                                                                      format("\e[33m^^^^^^^^^^^^^^^^^^^^^^~n\e[0m") ).
-process_form(_, In, _) :- format(atom(Msg), "failed to process form: ~w", [In]), throw(error(syntax_error(Msg), none)).
+process_form(_, In, _) :- format(atom(Msg), "failed to process form: ~w", [In]), on_parse_error(Msg, here, _).
 
 %Like blanks but counts newlines:
 newlines(C0, C2) --> blanks_to_nl, !, {C1 is C0+1}, newlines(C1,C2).
@@ -62,10 +65,11 @@ grab_until_balanced(D, Acc, Cs, LC0, LC2, InS) --> [C], { ( C=0'" -> InS1 is 1-I
 %Read a balanced (...) block if available, turn into string, then continue with rest, ignoring comments:
 top_forms([],_) --> blanks, eos.
 top_forms([Term|Fs], LC0) --> newlines(LC0, LC1),
+                              { nb_setval(petta_current_line, LC1) },
                               ( "!" -> {Tag = runnable} ; {Tag = form} ),
-                              ( "(" -> [] ; string_without("\n", Rest), { format(atom(Msg), "expected '(' or '!(', line ~w:~n~s", [LC1, Rest]), throw(error(syntax_error(Msg), none)) } ),
+                              ( "(" -> [] ; string_without("\n", Rest), { format(atom(Msg), "expected '(' or '!(', line ~w:~n~s", [LC1, Rest]), on_parse_error(Msg, here, _) } ),
                               ( grab_until_balanced(1, [0'(], Cs, LC1, LC2, 0)
-                                -> { true } ; string_without("\n", Rest), { format(atom(Msg), "missing ')', starting at line ~w:~n~s", [LC1, Rest]), throw(error(syntax_error(Msg), none)) } ),
+                                -> { true } ; string_without("\n", Rest), { format(atom(Msg), "missing ')', starting at line ~w:~n~s", [LC1, Rest]), on_parse_error(Msg, here, _) } ),
                               { string_codes(FormStr, Cs), Term =.. [Tag, FormStr] },
                               top_forms(Fs, LC2).
 

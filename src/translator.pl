@@ -1,3 +1,5 @@
+:- use_module(extension_pts).
+
 %Pattern matching, structural and functional/relational constraints on arguments:
 constrain_args(X, X, []) :- (var(X); atomic(X)), !.
 constrain_args([F, A, B], Out, Goals) :- nonvar(F),
@@ -59,9 +61,10 @@ reduce([F|Args], Out) :- nonvar(F), atom(F), fun(F)
                           ; % --- Case 2: partial closure ---
                             compound(F), F = partial(Base, Bound) -> append(Bound, Args, NewArgs),
                                                                      reduce([Base|NewArgs], Out)
-                          ; % --- Case 3: leave unevaluated ---
-                            Out = [F|Args],
-                            \+ cyclic_term(Out).
+                          ; % --- Case 3: leave unevaluated or report undefined ---
+                            ( atom(F), \+ fun(F)
+                              -> on_undefined_function(F, Args, Out)
+                            ; Out = [F|Args], \+ cyclic_term(Out) ).
 
 %Calling reduce from aggregate function foldall needs this argument wrapping
 agg_reduce(AF, Acc, Val, NewAcc) :- reduce([AF, Acc, Val], NewAcc).
@@ -312,9 +315,10 @@ translate_expr([H0|T0], Goals, Out) :-
                     disj_list(Branches, Disj),
                     Goals = [Disj]
               ; build_call_or_partial(Fun, AllAVs, Out, Inner, [], Goals))
-          %Literals (numbers, strings, etc.), known non-function atom => data:
-          ; ( atomic(HV), \+ atom(HV) ; atom(HV), \+ fun(HV) ) -> Out = [HV|AVs],
-                                                                  Goals = Inner
+          %Literals (numbers, strings, etc.) => data:
+          ; atomic(HV), \+ atom(HV) -> Out = [HV|AVs], Goals = Inner
+          %Known non-function atom => extension point (default returns data):
+          ; atom(HV), \+ fun(HV) -> on_undefined_function(HV, AVs, Out), Goals = Inner
           %Plain data list: evaluate inner fun-sublists
           ; is_list(HV) -> eval_data_term(HV, Gd, HV1),
                            append(Inner, Gd, Goals),
