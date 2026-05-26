@@ -158,7 +158,8 @@ memo_stats_snapshot(Stats) :-
 %% 'clear-memoize-stats'(-true) is det.
 %  Reset all runtime counters to zero.
 'clear-memoize-stats'(true) :-
-    retractall(metta_memo_stat(_, _)).
+    Keys = [cache_hit, cache_miss, cache_bypass, answer_limit_truncated, waited_on_in_progress, in_progress_fallback],
+    forall(member(K, Keys), nb_setval(K, 0)).
 
 % Lifecycle, Dependencies, and Invalidation
 
