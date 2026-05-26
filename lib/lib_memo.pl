@@ -745,8 +745,7 @@ memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
       )
     ).
 
-% LRU path: evict victim unconditionally and admit the new entry.
-memo_store_lru(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs) :-
+evict_victim_and_admit(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs) :-
     ( metta_memo_entry(Fun, Arity, _, VictimAVs, VictimResults)
     -> entry_size(VictimAVs, VictimResults, VictimBytes),
        retractall(metta_memo_entry(Fun, Arity, _, VictimAVs, _)),
@@ -762,25 +761,16 @@ memo_store_lru(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail
     assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
     set_memo_queue_state(Fun, Arity, Count, Head1, Tail1).
 
+% LRU path: evict victim unconditionally and admit the new entry.
+memo_store_lru(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs) :-
+    evict_victim_and_admit(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs).
+
 % WTinyLFU path: admit new entry only if its frequency >= victim's frequency.
 memo_store_wtinylfu(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs) :-
     get_freq(Fun, Arity, VictimAVs, VictimFreq),
     get_freq(Fun, Arity, AVs, NewFreq),
     ( NewFreq >= VictimFreq
-    -> ( metta_memo_entry(Fun, Arity, _, VictimAVs, VictimResults)
-       -> entry_size(VictimAVs, VictimResults, VictimBytes),
-          retractall(metta_memo_entry(Fun, Arity, _, VictimAVs, _)),
-          ( retract(metta_memo_total_bytes(CurrentTotal))
-          -> NewTotal is CurrentTotal - VictimBytes + NewBytes
-          ; NewTotal is NewBytes
-          ),
-          asserta(metta_memo_total_bytes(NewTotal))
-       ; true
-       ),
-       Tail1 is Tail + 1,
-       assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
-       assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
-       set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
+    -> evict_victim_and_admit(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs)
     ; Tail1 is Tail + 1,
       assertz(metta_memo_q(Fun, Arity, Tail1, VictimAVs)),
       set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
