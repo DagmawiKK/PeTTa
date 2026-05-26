@@ -713,6 +713,13 @@ update_total_bytes_add(Bytes) :-
     asserta(metta_memo_total_bytes(New)).
 
 % Store a result, enforcing the unique-entry limit and eviction policy.
+insert_cache_entry(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count1, Head, Tail) :-
+    Tail1 is Tail + 1,
+    assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
+    assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
+    update_total_bytes_add(NewBytes),
+    set_memo_queue_state(Fun, Arity, Count1, Head, Tail1).
+
 memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
     memo_unique_limit(Max),
     get_memo_queue_state(Fun, Arity, Count, Head, Tail),
@@ -721,23 +728,15 @@ memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
     memo_strategy(Strategy),
     ( Count < Max
     -> Count1 is Count + 1,
-       Tail1 is Tail + 1,
-       assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
-       assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
-       update_total_bytes_add(NewBytes),
-       set_memo_queue_state(Fun, Arity, Count1, Head, Tail1)
+       insert_cache_entry(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count1, Head, Tail)
     ; Head1 is Head + 1,
       ( retract(metta_memo_q(Fun, Arity, Head1, VictimAVs))
       -> ( Strategy == lru
          -> memo_store_lru(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs)
          ; memo_store_wtinylfu(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs)
          )
-      ; Tail1 is Tail + 1,
-        assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
-        assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
-        update_total_bytes_add(NewBytes),
-        Count1 is min(Max, Count + 1),
-        set_memo_queue_state(Fun, Arity, Count1, Head1, Tail1)
+      ; Count1 is min(Max, Count + 1),
+        insert_cache_entry(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count1, Head1, Tail)
       )
     ).
 
