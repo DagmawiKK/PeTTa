@@ -350,15 +350,10 @@ apply_aggregate_mode(ProbeResults, FinalResults) :-
 apply_aggregate_mode(none, ProbeResults, ProbeResults).
 apply_aggregate_mode(count, ProbeResults, [answer(Count)]) :-
     length(ProbeResults, Count).
-apply_aggregate_mode(sum, ProbeResults, [answer(Sum)]) :-
-    findall(V, member(answer(V), ProbeResults), Values),
-    sum_list(Values, Sum).
-apply_aggregate_mode(min, ProbeResults, [answer(Min)]) :-
-    findall(V, member(answer(V), ProbeResults), Values),
-    min_list(Values, Min).
-apply_aggregate_mode(max, ProbeResults, [answer(Max)]) :-
-    findall(V, member(answer(V), ProbeResults), Values),
-    max_list(Values, Max).
+apply_aggregate_mode(Mode, ProbeResults, [answer(V)]) :-
+    memberchk(Mode-Pred, [sum-sum_list, min-min_list, max-max_list]),
+    findall(X, member(answer(X), ProbeResults), Values),
+    call(Pred, Values, V).
 
 truncate_answers(Answers, Limited) :-
     memo_answer_limit(Limit),
@@ -432,11 +427,8 @@ cache_call_cached_ground(Fun, Arity, CurGen, KeyAVs, Out) :-
     !,
     member(Answer, CachedResults),
     replay_ground_answer(Out, Answer).
-cache_call_cached_ground(_, _, _, _, _) :-
-    fail.
 
-cache_call_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out) :-
-    _ = Goal,
+cache_call_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, _Goal, Out) :-
     % For ground+quantized keys, collisions are intentional. Guarding "in-progress"
     % entries here can cause large duplicate recomputation in recursive workloads
     % Keep the ground path as direct probe/store.
@@ -740,7 +732,6 @@ memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
                     assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
                     set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
                 ; % Reject new entry, keep victim
-                    _ = Gen,
                     Tail1 is Tail + 1,
                     assertz(metta_memo_q(Fun, Arity, Tail1, VictimAVs)),
                     set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
