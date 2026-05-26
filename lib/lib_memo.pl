@@ -209,7 +209,7 @@ cache_invalidate_single(Fun) :-
         with_cache_fun_mutex(Fun, Arity,
             ( bump_metta_memo_generation(Fun, Arity),
               invalidate_entries_for_fun_arity(Fun, Arity, FreedBytes),
-              update_total_bytes_subtract(FreedBytes),
+              update_total_bytes(-FreedBytes),
               retractall(metta_memo_count(Fun, Arity, _)),
               retractall(metta_memo_head(Fun, Arity, _)),
               retractall(metta_memo_tail(Fun, Arity, _)),
@@ -545,30 +545,28 @@ ensure_cms :-
       nb_setval(metta_memo_accesses, 0)
     ).
 
+cms_slot(Fun, Arity, AVs, CMS, Hash) :-
+    catch(nb_current(metta_cms, CMS), _, fail),
+    ( catch(nb_current(metta_cms_size, SketchSize), _, fail)
+    -> true
+    ; functor(CMS, _, SketchSize) ),
+    term_hash((Fun, Arity, AVs), HashRaw),
+    Hash is (abs(HashRaw) mod SketchSize) + 1.
+
 get_freq(Fun, Arity, AVs, Freq) :-
     with_cms_mutex(
-        ( catch(nb_current(metta_cms, CMS), _, fail)
-        -> ( catch(nb_current(metta_cms_size, SketchSize), _, fail)
-            -> true
-            ; functor(CMS, _, SketchSize) ),
-            term_hash((Fun, Arity, AVs), HashRaw),
-            Hash is (abs(HashRaw) mod SketchSize) + 1,
-            arg(Hash, CMS, Val),
-            ( integer(Val) -> Freq = Val ; Freq = 0 )
+        ( cms_slot(Fun, Arity, AVs, CMS, Hash)
+        -> arg(Hash, CMS, Val),
+           ( integer(Val) -> Freq = Val ; Freq = 0 )
         ; Freq = 0 )
     ).
 
 record_hit(Fun, Arity, AVs) :-
     with_cms_mutex(
-        ( catch(nb_current(metta_cms, CMS), _, fail)
-        -> ( catch(nb_current(metta_cms_size, SketchSize), _, fail)
-            -> true
-            ; functor(CMS, _, SketchSize) ),
-            term_hash((Fun, Arity, AVs), HashRaw),
-            Hash is (abs(HashRaw) mod SketchSize) + 1,
-            arg(Hash, CMS, Val),
-            ( integer(Val) -> NextVal is Val + 1 ; NextVal = 1 ),
-            nb_setarg(Hash, CMS, NextVal)
+        ( cms_slot(Fun, Arity, AVs, CMS, Hash)
+        -> arg(Hash, CMS, Val),
+           ( integer(Val) -> NextVal is Val + 1 ; NextVal = 1 ),
+           nb_setarg(Hash, CMS, NextVal)
         ; true )
     ).
 
@@ -701,20 +699,12 @@ invalidate_entries_for_fun_arity(Fun, Arity, FreedBytes) :-
     sum_list(Sizes, FreedBytes),
     retractall(metta_memo_entry(Fun, Arity, _, _, _)).
 
-update_total_bytes_subtract(Bytes) :-
+update_total_bytes(Delta) :-
     ( retract(metta_memo_total_bytes(Current))
     -> true
     ; Current = 0
     ),
-    New is max(0, Current - Bytes),
-    retractall(metta_memo_total_bytes(_)),
-    asserta(metta_memo_total_bytes(New)).
-
-update_total_bytes_add(Bytes) :-
-    ( retract(metta_memo_total_bytes(Current))
-    -> New is Current + Bytes
-    ; New is Bytes
-    ),
+    New is max(0, Current + Delta),
     asserta(metta_memo_total_bytes(New)).
 
 % Store a result, enforcing the unique-entry limit and eviction policy.
@@ -722,7 +712,7 @@ insert_cache_entry(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count1, Head, 
     Tail1 is Tail + 1,
     assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
     assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
-    update_total_bytes_add(NewBytes),
+    update_total_bytes(NewBytes),
     set_memo_queue_state(Fun, Arity, Count1, Head, Tail1).
 
 memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
@@ -786,6 +776,10 @@ store_if_gen(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
 
 % Public API
 
+memoize_reload(Terms) :-
+    forall(member(Term, Terms), 'remove-atom'('&self', Term, _)),
+    forall(member(Term, Terms), 'add-atom'('&self', Term, _)).
+
 %% 'memoize'(+Fun, -'Empty') is det.
 %  Enable memoization for all arities of Fun and reload its clauses.
 'memoize'(Fun, 'Empty') :-
@@ -797,9 +791,8 @@ store_if_gen(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
         (translated_from(_, Term), Term = [=, [Fun|_], _]),
         RawTerms),
     sort(RawTerms, Terms),
-    forall(member(Term, Terms), 'remove-atom'('&self', Term, _)),
     enable_memoization(Fun),
-    forall(member(Term, Terms), 'add-atom'('&self', Term, _)).
+    memoize_reload(Terms).
 
 %% 'memoize'(+Fun, +CallArity, -'Empty') is det.
 %  Enable memoization for Fun at a specific call arity and reload its clauses.
@@ -819,6 +812,5 @@ store_if_gen(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
         ),
         RawTerms),
     sort(RawTerms, Terms),
-    forall(member(Term, Terms), 'remove-atom'('&self', Term, _)),
     enable_memoization(Fun, CallArity),
-    forall(member(Term, Terms), 'add-atom'('&self', Term, _)).
+    memoize_reload(Terms).
