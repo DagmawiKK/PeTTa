@@ -128,7 +128,14 @@ apply_memo_option(Opt) :-
     memo_float_precision(Prec),
     memo_answer_limit(AnswerLimit),
     memo_aggregate_mode(AggMode),
-    Config = [[strategy, S], ['unique-limit', UniqueLimit], ['size-limit', SizeLimit], [float, Prec], ['answer-limit', AnswerLimit], [aggregate, AggMode]].
+    Config = [
+        [strategy, S],
+        ['unique-limit', UniqueLimit],
+        ['size-limit', SizeLimit],
+        [float, Prec],
+        ['answer-limit', AnswerLimit],
+        [aggregate, AggMode]
+    ].
 
 % Stats API
 
@@ -549,7 +556,7 @@ get_freq(Fun, Arity, AVs, Freq) :-
             arg(Hash, CMS, Val),
             ( integer(Val) -> Freq = Val ; Freq = 0 )
         ; Freq = 0 )
-        ).
+    ).
 
 record_hit(Fun, Arity, AVs) :-
     with_cms_mutex(
@@ -563,7 +570,7 @@ record_hit(Fun, Arity, AVs) :-
             ( integer(Val) -> NextVal is Val + 1 ; NextVal = 1 ),
             nb_setarg(Hash, CMS, NextVal)
         ; true )
-        ).
+    ).
 
 record_miss(Fun, Arity, AVs) :-
     with_cms_mutex(
@@ -579,7 +586,8 @@ record_miss(Fun, Arity, AVs) :-
           NextAcc is Acc + 1,
           nb_setval(metta_memo_accesses, NextAcc),
           ( NextAcc > SketchSize -> halve_cms ; true )
-        )).
+        )
+    ).
 
 halve_cms :-
     nb_setval(metta_memo_accesses, 0),
@@ -645,13 +653,10 @@ evict_global_space(NeededBytes, Attempts) :-
       -> true  % Space available now
       ; % Need to evict
         ( find_global_oldest(Fun, Arity, VictimAVs)
-        -> format(user_error, 'DEBUG: Global eviction ~d: ~w/~d (needed ~w, current ~w, limit ~w)~n',
-                 [Attempts, Fun, Arity, NeededBytes, Current, Limit]),
-           evict_entry(Fun, Arity, VictimAVs),
+        -> evict_entry(Fun, Arity, VictimAVs),
            NewAttempts is Attempts + 1,
            evict_global_space(NeededBytes, NewAttempts)
-        ; format(user_error, 'WARNING: No entries to evict, but global limit exceeded.~n', []),
-          true
+        ; true
         )
       )
     ).
