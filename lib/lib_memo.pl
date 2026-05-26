@@ -683,67 +683,68 @@ update_total_bytes_add(Bytes) :-
 memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
     memo_unique_limit(Max),
     get_memo_queue_state(Fun, Arity, Count, Head, Tail),
-    % Check global size limit first
     entry_size(AVs, CachedResults, NewBytes),
     evict_global_space(NewBytes),
     memo_strategy(Strategy),
     ( Count < Max
     -> Count1 is Count + 1,
-        Tail1 is Tail + 1,
+       Tail1 is Tail + 1,
+       assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
+       assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
+       update_total_bytes_add(NewBytes),
+       set_memo_queue_state(Fun, Arity, Count1, Head, Tail1)
+    ; Head1 is Head + 1,
+      ( retract(metta_memo_q(Fun, Arity, Head1, VictimAVs))
+      -> ( Strategy == lru
+         -> memo_store_lru(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs)
+         ; memo_store_wtinylfu(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs)
+         )
+      ; Tail1 is Tail + 1,
         assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
         assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
         update_total_bytes_add(NewBytes),
-        set_memo_queue_state(Fun, Arity, Count1, Head, Tail1)
-    ; Head1 is Head + 1,
-        ( retract(metta_memo_q(Fun, Arity, Head1, VictimAVs))
-        -> ( Strategy == lru
-            -> % Evict victim and add new - update global size
-                ( metta_memo_entry(Fun, Arity, _, VictimAVs, VictimResults)
-                -> entry_size(VictimAVs, VictimResults, VictimBytes),
-                   retractall(metta_memo_entry(Fun, Arity, _, VictimAVs, _)),
-                   % Subtract victim size, add new size
-                   ( retract(metta_memo_total_bytes(CurrentTotal))
-                   -> NewTotal is CurrentTotal - VictimBytes + NewBytes
-                   ; NewTotal is NewBytes
-                   ),
-                   asserta(metta_memo_total_bytes(NewTotal))
-                ; true
-                ),
-                Tail1 is Tail + 1,
-                assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
-                assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
-                set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
-            ; get_freq(Fun, Arity, VictimAVs, VictimFreq),
-                get_freq(Fun, Arity, AVs, NewFreq),
-                ( NewFreq >= VictimFreq
-                -> % Admit new entry - evict victim
-                    ( metta_memo_entry(Fun, Arity, _, VictimAVs, VictimResults)
-                    -> entry_size(VictimAVs, VictimResults, VictimBytes),
-                       retractall(metta_memo_entry(Fun, Arity, _, VictimAVs, _)),
-                       ( retract(metta_memo_total_bytes(CurrentTotal))
-                       -> NewTotal is CurrentTotal - VictimBytes + NewBytes
-                       ; NewTotal is NewBytes
-                       ),
-                       asserta(metta_memo_total_bytes(NewTotal))
-                    ; true
-                    ),
-                    Tail1 is Tail + 1,
-                    assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
-                    assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
-                    set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
-                ; % Reject new entry, keep victim
-                    Tail1 is Tail + 1,
-                    assertz(metta_memo_q(Fun, Arity, Tail1, VictimAVs)),
-                    set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
-                )
-            )
-        ; Tail1 is Tail + 1,
-            assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
-            assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
-            update_total_bytes_add(NewBytes),
-            Count1 is min(Max, Count + 1),
-            set_memo_queue_state(Fun, Arity, Count1, Head1, Tail1)
-        )
+        Count1 is min(Max, Count + 1),
+        set_memo_queue_state(Fun, Arity, Count1, Head1, Tail1)
+      )
+    ).
+
+memo_store_lru(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs) :-
+    ( metta_memo_entry(Fun, Arity, _, VictimAVs, VictimResults)
+    -> entry_size(VictimAVs, VictimResults, VictimBytes),
+       retractall(metta_memo_entry(Fun, Arity, _, VictimAVs, _)),
+       ( retract(metta_memo_total_bytes(CurrentTotal))
+       -> NewTotal is CurrentTotal - VictimBytes + NewBytes
+       ; NewTotal is NewBytes
+       ),
+       asserta(metta_memo_total_bytes(NewTotal))
+    ; true
+    ),
+    Tail1 is Tail + 1,
+    assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
+    assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
+    set_memo_queue_state(Fun, Arity, Count, Head1, Tail1).
+
+memo_store_wtinylfu(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs) :-
+    get_freq(Fun, Arity, VictimAVs, VictimFreq),
+    get_freq(Fun, Arity, AVs, NewFreq),
+    ( NewFreq >= VictimFreq
+    -> ( metta_memo_entry(Fun, Arity, _, VictimAVs, VictimResults)
+       -> entry_size(VictimAVs, VictimResults, VictimBytes),
+          retractall(metta_memo_entry(Fun, Arity, _, VictimAVs, _)),
+          ( retract(metta_memo_total_bytes(CurrentTotal))
+          -> NewTotal is CurrentTotal - VictimBytes + NewBytes
+          ; NewTotal is NewBytes
+          ),
+          asserta(metta_memo_total_bytes(NewTotal))
+       ; true
+       ),
+       Tail1 is Tail + 1,
+       assertz(metta_memo_q(Fun, Arity, Tail1, AVs)),
+       assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
+       set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
+    ; Tail1 is Tail + 1,
+      assertz(metta_memo_q(Fun, Arity, Tail1, VictimAVs)),
+      set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
     ).
 
 store_if_current_generation(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
