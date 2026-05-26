@@ -577,16 +577,14 @@ record_hit(Fun, Arity, AVs) :-
 record_miss(Fun, Arity, AVs) :-
     with_cms_mutex(
         ( ensure_cms,
-          nb_getval(metta_cms_size, SketchSize),
-          term_hash((Fun, Arity, AVs), HashRaw),
-          Hash is (abs(HashRaw) mod SketchSize) + 1,
-          nb_getval(metta_cms, CMS),
+          cms_slot(Fun, Arity, AVs, CMS, Hash),
           arg(Hash, CMS, Val),
           ( integer(Val) -> NextVal is Val + 1 ; NextVal = 1 ),
           nb_setarg(Hash, CMS, NextVal),
           nb_getval(metta_memo_accesses, Acc),
           NextAcc is Acc + 1,
           nb_setval(metta_memo_accesses, NextAcc),
+          functor(CMS, _, SketchSize),
           ( NextAcc > SketchSize -> halve_cms ; true )
         )
     ).
