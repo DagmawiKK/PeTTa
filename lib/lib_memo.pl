@@ -284,7 +284,7 @@ memoization_enabled_for_call(Fun, CallArity) :-
     memo_enabled(Fun)
     ; memo_enabled(Fun, CallArity).
 
-memoization_enabled_for_predicate_arity(Fun, PredArity) :-
+memo_enabled_arity(Fun, PredArity) :-
     integer(PredArity),
     PredArity >= 1,
     CallArity is PredArity - 1,
@@ -292,7 +292,7 @@ memoization_enabled_for_predicate_arity(Fun, PredArity) :-
 
 memoizable_fun(Fun, Arity) :-
     current_predicate(Fun/Arity),
-    memoization_enabled_for_predicate_arity(Fun, Arity),
+    memo_enabled_arity(Fun, Arity),
     integer(Arity),
     Arity >= 1,
     length(HeadArgs, Arity),
@@ -360,18 +360,18 @@ finish_in_progress(Fun, Arity, Gen, KeyAVs) :-
     with_cache_fun_mutex(Fun, Arity,
         retractall(metta_memo_in_progress(Fun, Arity, Gen, KeyAVs))).
 
-wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out) :-
-    wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, 25).
+wait_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out) :-
+    wait_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, 25).
 
-wait_for_cached_variant(_, _, _, _, _, _, 0) :- fail.
-wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, Attempts) :-
+wait_cached_variant(_, _, _, _, _, _, 0) :- fail.
+wait_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, Attempts) :-
     ( cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults),
       member(Answer, CachedResults),
       replay_variant_answer(AVs, Out, Answer)
     -> true
     ; sleep(0.001),
       Next is Attempts - 1,
-      wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, Next)
+      wait_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, Next)
     ).
 
 % Probe and Aggregation
@@ -438,10 +438,10 @@ cache_replay_hit_variant(Fun, Arity, KeyAVs, CachedResults, AVs, Out) :-
 cache_store(Fun, Arity, CurGen, KeyAVs, ProbeResults) :-
     truncate_answers(ProbeResults, LimitedResults),
     ( LimitedResults == ProbeResults -> true ; memo_stat_inc(answer_limit_truncated) ),
-    store_if_current_generation(Fun, Arity, CurGen, KeyAVs, LimitedResults),
+    store_if_gen(Fun, Arity, CurGen, KeyAVs, LimitedResults),
     record_miss(Fun, Arity, KeyAVs).
 
-cache_probe_and_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults) :-
+probe_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults) :-
     setup_call_cleanup(
         true,
         memo_probe_results(Fun, AVs, ProbeResults),
@@ -475,11 +475,11 @@ cache_call_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, _Goal, Out) :-
 cache_call_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out) :-
     start_in_progress(Fun, Arity, CurGen, KeyAVs, Started),
     ( Started == true
-    -> cache_probe_and_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults),
+    -> probe_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults),
        memo_stat_inc(cache_miss),
        member(Answer, ProbeResults),
        replay_variant_answer(AVs, Out, Answer)
-    ; ( wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out)
+    ; ( wait_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out)
       -> memo_stat_inc(waited_on_in_progress)
       ; memo_stat_inc(in_progress_fallback),
         call(Goal)
@@ -782,7 +782,7 @@ memo_store_wtinylfu(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1,
       set_memo_queue_state(Fun, Arity, Count, Head1, Tail1)
     ).
 
-store_if_current_generation(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
+store_if_gen(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
     with_cache_fun_mutex(Fun, Arity,
         ( memo_current_generation(Fun, Arity, CurGen),
           ( CurGen =:= ExpectedGen
