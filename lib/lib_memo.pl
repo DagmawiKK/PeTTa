@@ -75,7 +75,10 @@ normalize_memo_strategy(In, lru) :-
 normalize_memo_strategy(In, Out) :-
     atom(In),
     downcase_atom(In, D),
+    D \== In,
     normalize_memo_strategy(D, Out).
+normalize_memo_strategy(In, _) :-
+    throw(error(domain_error(memo_strategy, In), normalize_memo_strategy/2)).
 
 apply_memo_option([strategy, Raw]) :-
     normalize_memo_strategy(Raw, S), !,
