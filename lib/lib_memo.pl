@@ -37,23 +37,6 @@
 % Per-thread call context to build dependency graph cheaply
 :- thread_local metta_memo_call_ctx/2.
 
-% Runtime Hook Integration
-
-:- multifile metta_try_dispatch_call/4.
-metta_try_dispatch_call(Fun, Args, Out, Goal) :-
-    length(Args, CallArity),
-    memoization_enabled_for_call(Fun, CallArity),
-    Goal = cache_call(Fun, Args, Out).
-
-:- multifile metta_on_function_changed/1.
-metta_on_function_changed(Fun) :-
-    cache_invalidate(Fun).
-
-:- multifile metta_on_function_removed/1.
-metta_on_function_removed(Fun) :-
-    cache_invalidate(Fun),
-    disable_memoization(Fun).
-
 % Configuration API
 
 :- dynamic memo_strategy/1.
@@ -244,6 +227,263 @@ cache_clear :-
     ; memo_enabled(Fun, CallArity)
     ), !.
 'is-memoized'(_, _, false).
+
+% Runtime Hook Integration
+
+:- multifile metta_try_dispatch_call/4.
+metta_try_dispatch_call(Fun, Args, Out, Goal) :-
+    length(Args, CallArity),
+    memoization_enabled_for_call(Fun, CallArity),
+    Goal = cache_call(Fun, Args, Out).
+
+:- multifile metta_on_function_changed/1.
+metta_on_function_changed(Fun) :-
+    cache_invalidate(Fun).
+
+:- multifile metta_on_function_removed/1.
+metta_on_function_removed(Fun) :-
+    cache_invalidate(Fun),
+    disable_memoization(Fun).
+
+% Key Canonicalization and Replay
+
+memoization_enabled_for_call(Fun, CallArity) :-
+    memo_enabled(Fun)
+    ; memo_enabled(Fun, CallArity).
+
+memoization_enabled_for_predicate_arity(Fun, PredArity) :-
+    integer(PredArity),
+    PredArity >= 1,
+    CallArity is PredArity - 1,
+    memoization_enabled_for_call(Fun, CallArity).
+
+memoizable_fun(Fun, Arity) :-
+    current_predicate(Fun/Arity),
+    memoization_enabled_for_predicate_arity(Fun, Arity),
+    integer(Arity),
+    Arity >= 1,
+    length(HeadArgs, Arity),
+    Head =.. [Fun | HeadArgs],
+    \+ predicate_property(Head, built_in).
+
+quantize_float(V, Q) :-
+    memo_float_precision(Prec),
+    Scale is 10.0 ** Prec,
+    Q is round(V * Scale) / Scale.
+
+quantize_term(T, T) :- var(T), !.
+quantize_term(T, Q) :- float(T), !, quantize_float(T, Q).
+quantize_term(T, T) :- atomic(T), !.
+quantize_term(T, Q) :-
+    T =.. [F|Args],
+    maplist(quantize_term, Args, QArgs),
+    Q =.. [F|QArgs].
+
+args_too_complex(AVs) :-
+    memo_size_limit(Limit),
+    term_size(AVs, S),
+    EstimatedBytes is S * 8,
+    EstimatedBytes > Limit.
+
+args_worth_caching(AVs) :-
+    \+ args_too_complex(AVs).
+
+% Canonical cache key: quantize floats, then normalize variable identities.
+canonicalize_args_key(AVs, KeyAVs) :-
+    quantize_term(AVs, Quantized),
+    copy_term(Quantized, KeyAVs),
+    numbervars(KeyAVs, 0, _).
+
+with_memo_call_context(Fun, Arity, Goal) :-
+    ( metta_memo_call_ctx(ParentFun, ParentArity)
+    -> ( ParentFun == Fun, ParentArity == Arity
+       -> true
+       ; ( metta_memo_dep(ParentFun, ParentArity, Fun, Arity)
+         -> true
+         ; asserta(metta_memo_dep(ParentFun, ParentArity, Fun, Arity))
+         ))
+    ; true ),
+    setup_call_cleanup(
+        asserta(metta_memo_call_ctx(Fun, Arity)),
+        Goal,
+        retract(metta_memo_call_ctx(Fun, Arity))).
+
+replay_variant_answer(AVs, Out, answer(CachedAVs, CachedOut)) :-
+    AVs = CachedAVs,
+    Out = CachedOut.
+
+replay_ground_answer(Out, answer(CachedOut)) :-
+    Out = CachedOut.
+
+start_in_progress(Fun, Arity, Gen, KeyAVs, Started) :-
+    with_cache_fun_mutex(Fun, Arity,
+        ( metta_memo_in_progress(Fun, Arity, Gen, KeyAVs)
+        -> Started = false
+        ; asserta(metta_memo_in_progress(Fun, Arity, Gen, KeyAVs)),
+          Started = true
+        )).
+
+finish_in_progress(Fun, Arity, Gen, KeyAVs) :-
+    with_cache_fun_mutex(Fun, Arity,
+        retractall(metta_memo_in_progress(Fun, Arity, Gen, KeyAVs))).
+
+wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out) :-
+    wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, 25).
+
+wait_for_cached_variant(_, _, _, _, _, _, 0) :- fail.
+wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, Attempts) :-
+    ( cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults),
+      member(Answer, CachedResults),
+      replay_variant_answer(AVs, Out, Answer)
+    -> true
+    ; sleep(0.001),
+      Next is Attempts - 1,
+      wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, Next)
+    ).
+
+% Probe and Aggregation
+
+apply_aggregate_mode(ProbeResults, FinalResults) :-
+    memo_aggregate_mode(Mode),
+    apply_aggregate_mode(Mode, ProbeResults, FinalResults).
+
+apply_aggregate_mode(none, ProbeResults, ProbeResults).
+apply_aggregate_mode(count, ProbeResults, [answer(Count)]) :-
+    length(ProbeResults, Count).
+apply_aggregate_mode(sum, ProbeResults, [answer(Sum)]) :-
+    findall(V, member(answer(V), ProbeResults), Values),
+    sum_list(Values, Sum).
+apply_aggregate_mode(min, ProbeResults, [answer(Min)]) :-
+    findall(V, member(answer(V), ProbeResults), Values),
+    min_list(Values, Min).
+apply_aggregate_mode(max, ProbeResults, [answer(Max)]) :-
+    findall(V, member(answer(V), ProbeResults), Values),
+    max_list(Values, Max).
+
+truncate_answers(Answers, Limited) :-
+    memo_answer_limit(Limit),
+    length(Prefix, Limit),
+    append(Prefix, _, Answers), !,
+    Limited = Prefix.
+truncate_answers(Answers, Answers).
+
+% Runtime Dispatch
+
+memo_probe_results(Fun, AVs, ProbeResults) :-
+    memo_answer_limit(Limit),
+    append(AVs, [Result], RawArgs),
+    RawGoal =.. [Fun | RawArgs],
+    findnsols(Limit, answer(SolvedAVs, SolvedResult),
+        ( call(RawGoal),
+          copy_term((AVs, Result), (SolvedAVs, SolvedResult))
+        ),
+        ProbeResults).
+
+% Ground calls should not re-unify raw input args on replay, because
+% float quantization intentionally maps slightly different inputs to one key.
+memo_probe_ground_results(Fun, AVs, ProbeResults) :-
+    memo_answer_limit(Limit),
+    append(AVs, [Result], RawArgs),
+    RawGoal =.. [Fun | RawArgs],
+    findnsols(Limit, answer(SolvedResult),
+        ( call(RawGoal),
+          copy_term(Result, SolvedResult)
+        ),
+        ProbeResults).
+
+cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults) :-
+    metta_memo_entry(Fun, Arity, CurGen, KeyAVs, CachedResults).
+
+cache_replay_hit_ground(Fun, Arity, KeyAVs, CachedResults, Out) :-
+    memo_stat_inc(cache_hit),
+    record_hit(Fun, Arity, KeyAVs),
+    member(Answer, CachedResults),
+    replay_ground_answer(Out, Answer).
+
+cache_replay_hit_variant(Fun, Arity, KeyAVs, CachedResults, AVs, Out) :-
+    memo_stat_inc(cache_hit),
+    record_hit(Fun, Arity, KeyAVs),
+    member(Answer, CachedResults),
+    replay_variant_answer(AVs, Out, Answer).
+
+cache_store(Fun, Arity, CurGen, KeyAVs, ProbeResults) :-
+    truncate_answers(ProbeResults, LimitedResults),
+    ( LimitedResults == ProbeResults -> true ; memo_stat_inc(answer_limit_truncated) ),
+    store_if_current_generation(Fun, Arity, CurGen, KeyAVs, LimitedResults),
+    record_miss(Fun, Arity, KeyAVs).
+
+cache_probe_and_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults) :-
+    setup_call_cleanup(
+        true,
+        memo_probe_results(Fun, AVs, ProbeResults),
+        finish_in_progress(Fun, Arity, CurGen, KeyAVs)),
+    cache_store(Fun, Arity, CurGen, KeyAVs, ProbeResults).
+
+cache_probe_and_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults) :-
+    setup_call_cleanup(
+        true,
+        memo_probe_ground_results(Fun, AVs, ProbeResults),
+        finish_in_progress(Fun, Arity, CurGen, KeyAVs)),
+    apply_aggregate_mode(ProbeResults, AggregatedResults),
+    cache_store(Fun, Arity, CurGen, KeyAVs, AggregatedResults).
+
+cache_call_cached_ground(Fun, Arity, CurGen, KeyAVs, Out) :-
+    cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults),
+    !,
+    member(Answer, CachedResults),
+    replay_ground_answer(Out, Answer).
+cache_call_cached_ground(_, _, _, _, _) :-
+    fail.
+
+cache_call_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out) :-
+    _ = Goal,
+    % For ground+quantized keys, collisions are intentional. Guarding "in-progress"
+    % entries here can cause large duplicate recomputation in recursive workloads
+    % Keep the ground path as direct probe/store.
+    memo_probe_ground_results(Fun, AVs, ProbeResults),
+    apply_aggregate_mode(ProbeResults, FinalResults),
+    cache_store(Fun, Arity, CurGen, KeyAVs, FinalResults),
+    memo_stat_inc(cache_miss),
+    member(Answer, FinalResults),
+    replay_ground_answer(Out, Answer).
+
+cache_call_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out) :-
+    start_in_progress(Fun, Arity, CurGen, KeyAVs, Started),
+    ( Started == true
+    -> cache_probe_and_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults),
+       memo_stat_inc(cache_miss),
+       member(Answer, ProbeResults),
+       replay_variant_answer(AVs, Out, Answer)
+    ; ( wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out)
+      -> memo_stat_inc(waited_on_in_progress)
+      ; memo_stat_inc(in_progress_fallback),
+        call(Goal)
+      )
+    ).
+
+cache_call(Fun, AVs, Out) :-
+    append(AVs, [Out], GoalArgs),
+    Goal =.. [Fun | GoalArgs],
+    length(AVs, NArgs),
+    Arity is NArgs + 1,
+    with_memo_call_context(Fun, Arity,
+    ( args_worth_caching(AVs),
+      memoizable_fun(Fun, Arity)
+    -> canonicalize_args_key(AVs, KeyAVs),
+        memo_current_generation(Fun, Arity, CurGen),
+        ( ground(AVs)
+        -> ( cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults)
+           -> cache_replay_hit_ground(Fun, Arity, KeyAVs, CachedResults, Out)
+           ; cache_call_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out)
+           )
+        ; ( cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults)
+          -> cache_replay_hit_variant(Fun, Arity, KeyAVs, CachedResults, AVs, Out)
+          ; cache_call_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out)
+          )
+        )
+    ; memo_stat_inc(cache_bypass),
+      call(Goal)
+    )).
 
 % Synchronization Helpers
 
@@ -522,246 +762,6 @@ store_if_current_generation(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
           -> memo_store(Fun, Arity, CurGen, AVs, CachedResults)
           ; true )
         )).
-
-% Key Canonicalization and Replay
-
-memoization_enabled_for_call(Fun, CallArity) :-
-    memo_enabled(Fun)
-    ; memo_enabled(Fun, CallArity).
-
-memoization_enabled_for_predicate_arity(Fun, PredArity) :-
-    integer(PredArity),
-    PredArity >= 1,
-    CallArity is PredArity - 1,
-    memoization_enabled_for_call(Fun, CallArity).
-
-memoizable_fun(Fun, Arity) :-
-    current_predicate(Fun/Arity),
-    memoization_enabled_for_predicate_arity(Fun, Arity),
-    integer(Arity),
-    Arity >= 1,
-    length(HeadArgs, Arity),
-    Head =.. [Fun | HeadArgs],
-    \+ predicate_property(Head, built_in).
-
-quantize_float(V, Q) :-
-    memo_float_precision(Prec),
-    Scale is 10.0 ** Prec,
-    Q is round(V * Scale) / Scale.
-
-quantize_term(T, T) :- var(T), !.
-quantize_term(T, Q) :- float(T), !, quantize_float(T, Q).
-quantize_term(T, T) :- atomic(T), !.
-quantize_term(T, Q) :-
-    T =.. [F|Args],
-    maplist(quantize_term, Args, QArgs),
-    Q =.. [F|QArgs].
-
-args_too_complex(AVs) :-
-    memo_size_limit(Limit),
-    term_size(AVs, S),
-    EstimatedBytes is S * 8,
-    EstimatedBytes > Limit.
-
-args_worth_caching(AVs) :-
-    \+ args_too_complex(AVs).
-
-% Canonical cache key: quantize floats, then normalize variable identities.
-canonicalize_args_key(AVs, KeyAVs) :-
-    quantize_term(AVs, Quantized),
-    copy_term(Quantized, KeyAVs),
-    numbervars(KeyAVs, 0, _).
-
-with_memo_call_context(Fun, Arity, Goal) :-
-    ( metta_memo_call_ctx(ParentFun, ParentArity)
-    -> ( ParentFun == Fun, ParentArity == Arity
-       -> true
-       ; ( metta_memo_dep(ParentFun, ParentArity, Fun, Arity)
-         -> true
-         ; asserta(metta_memo_dep(ParentFun, ParentArity, Fun, Arity))
-         ))
-    ; true ),
-    setup_call_cleanup(
-        asserta(metta_memo_call_ctx(Fun, Arity)),
-        Goal,
-        retract(metta_memo_call_ctx(Fun, Arity))).
-
-replay_variant_answer(AVs, Out, answer(CachedAVs, CachedOut)) :-
-    AVs = CachedAVs,
-    Out = CachedOut.
-
-replay_ground_answer(Out, answer(CachedOut)) :-
-    Out = CachedOut.
-
-start_in_progress(Fun, Arity, Gen, KeyAVs, Started) :-
-    with_cache_fun_mutex(Fun, Arity,
-        ( metta_memo_in_progress(Fun, Arity, Gen, KeyAVs)
-        -> Started = false
-        ; asserta(metta_memo_in_progress(Fun, Arity, Gen, KeyAVs)),
-          Started = true
-        )).
-
-finish_in_progress(Fun, Arity, Gen, KeyAVs) :-
-    with_cache_fun_mutex(Fun, Arity,
-        retractall(metta_memo_in_progress(Fun, Arity, Gen, KeyAVs))).
-
-wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out) :-
-    wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, 25).
-
-wait_for_cached_variant(_, _, _, _, _, _, 0) :- fail.
-wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, Attempts) :-
-    ( cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults),
-      member(Answer, CachedResults),
-      replay_variant_answer(AVs, Out, Answer)
-    -> true
-    ; sleep(0.001),
-      Next is Attempts - 1,
-      wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out, Next)
-    ).
-
-% Probe and Aggregation
-
-apply_aggregate_mode(ProbeResults, FinalResults) :-
-    memo_aggregate_mode(Mode),
-    apply_aggregate_mode(Mode, ProbeResults, FinalResults).
-
-apply_aggregate_mode(none, ProbeResults, ProbeResults).
-apply_aggregate_mode(count, ProbeResults, [answer(Count)]) :-
-    length(ProbeResults, Count).
-apply_aggregate_mode(sum, ProbeResults, [answer(Sum)]) :-
-    findall(V, member(answer(V), ProbeResults), Values),
-    sum_list(Values, Sum).
-apply_aggregate_mode(min, ProbeResults, [answer(Min)]) :-
-    findall(V, member(answer(V), ProbeResults), Values),
-    min_list(Values, Min).
-apply_aggregate_mode(max, ProbeResults, [answer(Max)]) :-
-    findall(V, member(answer(V), ProbeResults), Values),
-    max_list(Values, Max).
-
-truncate_answers(Answers, Limited) :-
-    memo_answer_limit(Limit),
-    length(Prefix, Limit),
-    append(Prefix, _, Answers), !,
-    Limited = Prefix.
-truncate_answers(Answers, Answers).
-
-% Runtime Dispatch
-
-memo_probe_results(Fun, AVs, ProbeResults) :-
-    memo_answer_limit(Limit),
-    append(AVs, [Result], RawArgs),
-    RawGoal =.. [Fun | RawArgs],
-    findnsols(Limit, answer(SolvedAVs, SolvedResult),
-        ( call(RawGoal),
-          copy_term((AVs, Result), (SolvedAVs, SolvedResult))
-        ),
-        ProbeResults).
-
-% Ground calls should not re-unify raw input args on replay, because
-% float quantization intentionally maps slightly different inputs to one key.
-memo_probe_ground_results(Fun, AVs, ProbeResults) :-
-    memo_answer_limit(Limit),
-    append(AVs, [Result], RawArgs),
-    RawGoal =.. [Fun | RawArgs],
-    findnsols(Limit, answer(SolvedResult),
-        ( call(RawGoal),
-          copy_term(Result, SolvedResult)
-        ),
-        ProbeResults).
-
-cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults) :-
-    metta_memo_entry(Fun, Arity, CurGen, KeyAVs, CachedResults).
-
-cache_replay_hit_ground(Fun, Arity, KeyAVs, CachedResults, Out) :-
-    memo_stat_inc(cache_hit),
-    record_hit(Fun, Arity, KeyAVs),
-    member(Answer, CachedResults),
-    replay_ground_answer(Out, Answer).
-
-cache_replay_hit_variant(Fun, Arity, KeyAVs, CachedResults, AVs, Out) :-
-    memo_stat_inc(cache_hit),
-    record_hit(Fun, Arity, KeyAVs),
-    member(Answer, CachedResults),
-    replay_variant_answer(AVs, Out, Answer).
-
-cache_store(Fun, Arity, CurGen, KeyAVs, ProbeResults) :-
-    truncate_answers(ProbeResults, LimitedResults),
-    ( LimitedResults == ProbeResults -> true ; memo_stat_inc(answer_limit_truncated) ),
-    store_if_current_generation(Fun, Arity, CurGen, KeyAVs, LimitedResults),
-    record_miss(Fun, Arity, KeyAVs).
-
-cache_probe_and_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults) :-
-    setup_call_cleanup(
-        true,
-        memo_probe_results(Fun, AVs, ProbeResults),
-        finish_in_progress(Fun, Arity, CurGen, KeyAVs)),
-    cache_store(Fun, Arity, CurGen, KeyAVs, ProbeResults).
-
-cache_probe_and_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults) :-
-    setup_call_cleanup(
-        true,
-        memo_probe_ground_results(Fun, AVs, ProbeResults),
-        finish_in_progress(Fun, Arity, CurGen, KeyAVs)),
-    apply_aggregate_mode(ProbeResults, AggregatedResults),
-    cache_store(Fun, Arity, CurGen, KeyAVs, AggregatedResults).
-
-cache_call_cached_ground(Fun, Arity, CurGen, KeyAVs, Out) :-
-    cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults),
-    !,
-    member(Answer, CachedResults),
-    replay_ground_answer(Out, Answer).
-cache_call_cached_ground(_, _, _, _, _) :-
-    fail.
-
-cache_call_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out) :-
-    _ = Goal,
-    % For ground+quantized keys, collisions are intentional. Guarding "in-progress"
-    % entries here can cause large duplicate recomputation in recursive workloads
-    % Keep the ground path as direct probe/store.
-    memo_probe_ground_results(Fun, AVs, ProbeResults),
-    apply_aggregate_mode(ProbeResults, FinalResults),
-    cache_store(Fun, Arity, CurGen, KeyAVs, FinalResults),
-    memo_stat_inc(cache_miss),
-    member(Answer, FinalResults),
-    replay_ground_answer(Out, Answer).
-
-cache_call_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out) :-
-    start_in_progress(Fun, Arity, CurGen, KeyAVs, Started),
-    ( Started == true
-    -> cache_probe_and_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, ProbeResults),
-       memo_stat_inc(cache_miss),
-       member(Answer, ProbeResults),
-       replay_variant_answer(AVs, Out, Answer)
-    ; ( wait_for_cached_variant(Fun, Arity, CurGen, KeyAVs, AVs, Out)
-      -> memo_stat_inc(waited_on_in_progress)
-      ; memo_stat_inc(in_progress_fallback),
-        call(Goal)
-      )
-    ).
-
-cache_call(Fun, AVs, Out) :-
-    append(AVs, [Out], GoalArgs),
-    Goal =.. [Fun | GoalArgs],
-    length(AVs, NArgs),
-    Arity is NArgs + 1,
-    with_memo_call_context(Fun, Arity,
-    ( args_worth_caching(AVs),
-      memoizable_fun(Fun, Arity)
-    -> canonicalize_args_key(AVs, KeyAVs),
-        memo_current_generation(Fun, Arity, CurGen),
-        ( ground(AVs)
-        -> ( cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults)
-           -> cache_replay_hit_ground(Fun, Arity, KeyAVs, CachedResults, Out)
-           ; cache_call_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out)
-           )
-        ; ( cache_lookup(Fun, Arity, CurGen, KeyAVs, CachedResults)
-          -> cache_replay_hit_variant(Fun, Arity, KeyAVs, CachedResults, AVs, Out)
-          ; cache_call_store_variant(Fun, Arity, CurGen, KeyAVs, AVs, Goal, Out)
-          )
-        )
-    ; memo_stat_inc(cache_bypass),
-      call(Goal)
-    )).
 
 % Public API
 
