@@ -1,3 +1,12 @@
+/* lib_memo.pl — function-level memoization cache for MeTTa/Prolog.
+ *
+ * Central data structures:
+ *   metta_memo_entry/5  — cached results keyed by (Fun, Arity, Gen, AVs)
+ *   metta_memo_q/4      — FIFO admission queue per (Fun, Arity)
+ *   metta_memo_generation/3 — invalidation generation counter
+ *   metta_memo_dep/4    — caller->callee dependency graph for cascaded invalidation
+ */
+
 :- use_module(library(lists)).
 :- use_module(library(solution_sequences)).
 
@@ -50,10 +59,14 @@
 memo_unique_limit(100).
 memo_strategy(wtinylfu).
 memo_float_precision(12).
-memo_size_limit(5368709120).  % ~5GB (global limit)
-memo_answer_limit(2048).      % Cap stored answers per key
-memo_aggregate_mode(none).    % none|min|max|sum|count (ground path)
-metta_memo_total_bytes(0).    % Global bytes tracker
+% ~5GB global memory limit
+memo_size_limit(5368709120).
+% max answers stored per cache key
+memo_answer_limit(2048).
+% none|min|max|sum|count aggregation on ground results
+memo_aggregate_mode(none).
+% running total of cached bytes
+metta_memo_total_bytes(0).
 
 normalize_memo_strategy(In, wtinylfu) :-
     memberchk(In, [wtinylfu, 'WTinyLFU', 'W-TinyLFU', 'wtinylfu', 'w-tinylfu']), !.
@@ -75,7 +88,7 @@ apply_memo_option(['unique-limit', N]) :-
 apply_memo_option(['size-limit', N]) :-
     (integer(N) ; float(N)), N > 0, !,
     retractall(memo_size_limit(_)),
-    Bytes is round(N * 1073741824),  % Convert GB to bytes
+    Bytes is round(N * 1073741824),
     assertz(memo_size_limit(Bytes)).
 apply_memo_option([float, N]) :-
     integer(N), N >= 0, !,
@@ -92,6 +105,10 @@ apply_memo_option([aggregate, Mode]) :-
 apply_memo_option(Opt) :-
     throw(error(domain_error(memoize_option, Opt), 'config-memoize/2')).
 
+%% 'config-memoize'(+Opt, -true) is det.
+%% 'config-memoize'(+Opt1, +Opt2, -true) is det.
+%% 'config-memoize'(+Opt1, +Opt2, +Opt3, -true) is det.
+%  Apply one to three memoization configuration options.
 'config-memoize'(Opt1, true) :-
     apply_memo_option(Opt1).
 'config-memoize'(Opt1, Opt2, true) :-
@@ -102,6 +119,8 @@ apply_memo_option(Opt) :-
     apply_memo_option(Opt2),
     apply_memo_option(Opt3).
 
+%% 'get-memoize-config'(-Config) is det.
+%  Return current configuration as a list of [Key, Value] pairs.
 'get-memoize-config'(Config) :-
     memo_strategy(S),
     memo_unique_limit(UniqueLimit),
@@ -120,9 +139,13 @@ memo_stat_inc(Key) :-
 memo_stats_snapshot(Stats) :-
     findall([K, V], metta_memo_stat(K, V), Stats).
 
+%% 'get-memoize-stats'(-Stats) is det.
+%  Return runtime hit/miss counters as a list of [Key, Value] pairs.
 'get-memoize-stats'(Stats) :-
     memo_stats_snapshot(Stats).
 
+%% 'clear-memoize-stats'(-true) is det.
+%  Reset all runtime counters to zero.
 'clear-memoize-stats'(true) :-
     retractall(metta_memo_stat(_, _)).
 
@@ -210,12 +233,19 @@ cache_clear :-
     ( catch(nb_current(metta_cms_size, _), _, fail) -> nb_delete(metta_cms_size) ; true ),
     ( catch(nb_current(metta_memo_accesses, _), _, fail) -> nb_delete(metta_memo_accesses) ; true ).
 
+%% 'clear-memoize'(-true) is det.
+%  Wipe all cached entries, counters, and dependency edges.
 'clear-memoize'(true) :-
     cache_clear.
 
+%% 'invalidate-memoize'(+Fun, -true) is det.
+%  Invalidate Fun and all functions that transitively depend on it.
 'invalidate-memoize'(Fun, true) :-
     cache_invalidate(Fun).
 
+%% 'is-memoized'(+Fun, ?Bool) is det.
+%% 'is-memoized'(+Fun, +CallArity, ?Bool) is det.
+%  Bool is true if Fun (at CallArity) has memoization enabled, false otherwise.
 'is-memoized'(Fun, true) :-
     ( memo_enabled(Fun)
     ; memo_enabled(Fun, _)
@@ -230,16 +260,19 @@ cache_clear :-
 
 % Runtime Hook Integration
 
+% Hook: redirect memoization-enabled calls through cache_call/3.
 :- multifile metta_try_dispatch_call/4.
 metta_try_dispatch_call(Fun, Args, Out, Goal) :-
     length(Args, CallArity),
     memoization_enabled_for_call(Fun, CallArity),
     Goal = cache_call(Fun, Args, Out).
 
+% Hook: invalidate cache when a function's definition changes.
 :- multifile metta_on_function_changed/1.
 metta_on_function_changed(Fun) :-
     cache_invalidate(Fun).
 
+% Hook: invalidate cache and disable memoization when a function is removed.
 :- multifile metta_on_function_removed/1.
 metta_on_function_removed(Fun) :-
     cache_invalidate(Fun),
@@ -288,7 +321,7 @@ args_too_complex(AVs) :-
 args_worth_caching(AVs) :-
     \+ args_too_complex(AVs).
 
-% Canonical cache key: quantize floats, then normalize variable identities.
+% Quantize floats then normalize variable identities to form a stable cache key.
 canonicalize_args_key(AVs, KeyAVs) :-
     quantize_term(AVs, Quantized),
     copy_term(Quantized, KeyAVs),
@@ -364,6 +397,7 @@ truncate_answers(Answers, Answers).
 
 % Runtime Dispatch
 
+% Collect all variant answers for a non-ground call.
 memo_probe_results(Fun, AVs, ProbeResults) :-
     memo_answer_limit(Limit),
     append(AVs, [Result], RawArgs),
@@ -374,8 +408,8 @@ memo_probe_results(Fun, AVs, ProbeResults) :-
         ),
         ProbeResults).
 
-% Ground calls should not re-unify raw input args on replay, because
-% float quantization intentionally maps slightly different inputs to one key.
+% Collect ground-path answers; skip re-unifying inputs on replay because
+% float quantization maps slightly different inputs to the same key.
 memo_probe_ground_results(Fun, AVs, ProbeResults) :-
     memo_answer_limit(Limit),
     append(AVs, [Result], RawArgs),
@@ -429,9 +463,8 @@ cache_call_cached_ground(Fun, Arity, CurGen, KeyAVs, Out) :-
     replay_ground_answer(Out, Answer).
 
 cache_call_store_ground(Fun, Arity, CurGen, KeyAVs, AVs, _Goal, Out) :-
-    % For ground+quantized keys, collisions are intentional. Guarding "in-progress"
-    % entries here can cause large duplicate recomputation in recursive workloads
-    % Keep the ground path as direct probe/store.
+    % Collisions on quantized keys are intentional; skip in-progress guard to
+    % avoid duplicate recomputation in recursive workloads.
     memo_probe_ground_results(Fun, AVs, ProbeResults),
     apply_aggregate_mode(ProbeResults, FinalResults),
     cache_store(Fun, Arity, CurGen, KeyAVs, FinalResults),
@@ -560,6 +593,7 @@ halve_cms :-
 
 % Storage and Eviction
 
+% Read queue counters; default to 0 when not yet initialised.
 get_memo_queue_state(Fun, Arity, Count, Head, Tail) :-
     ( metta_memo_count(Fun, Arity, C) -> Count = C ; Count = 0 ),
     ( metta_memo_head(Fun, Arity, H) -> Head = H ; Head = 0 ),
@@ -575,14 +609,13 @@ set_memo_queue_state(Fun, Arity, Count, Head, Tail) :-
 
 % Storage - Eviction Policies (LRU and WTinyLFU)
 
-% Calculate estimated size of a cache entry (AVs + Results)
+% Estimated byte cost of one cache entry (term_size * 8 bytes/word).
 entry_size(AVs, Results, Bytes) :-
     term_size(AVs, S1),
     term_size(Results, S2),
     Bytes is (S1 + S2) * 8.
 
-% Find oldest entry globally (across all functions/entries)
-% Returns Fun, Arity, and AVs of the oldest entry
+% Find the globally oldest queue entry by minimum head value.
 find_global_oldest(Fun, Arity, AVs) :-
     findall((HeadVal, F, A),
         metta_memo_head(F, A, HeadVal),
@@ -593,11 +626,10 @@ find_global_oldest(Fun, Arity, AVs) :-
     Next is MinHead + 1,
     metta_memo_q(Fun, Arity, Next, AVs).
 
-% Maximum eviction attempts to prevent infinite recursion
+% Safety cap on recursive eviction loops.
 max_eviction_attempts(1000).
 
-% Evict entries globally until space is available
-% Includes safeguards against infinite recursion
+% Evict globally until NeededBytes fits within the size limit.
 evict_global_space(NeededBytes) :-
     evict_global_space(NeededBytes, 0).
 
@@ -624,7 +656,7 @@ evict_global_space(NeededBytes, Attempts) :-
       )
     ).
 
-% Evict a specific entry and update size tracking
+% Remove one entry from the cache and adjust the global byte counter.
 evict_entry(Fun, Arity, AVs) :-
     ( metta_memo_entry(Fun, Arity, _, AVs, CachedResults)
     -> entry_size(AVs, CachedResults, Bytes),
@@ -654,7 +686,7 @@ evict_entry(Fun, Arity, AVs) :-
     ; true
     ).
 
-% Update total bytes when adding entry
+% Retract all entries for (Fun, Arity) and return the total bytes freed.
 invalidate_entries_for_fun_arity(Fun, Arity, FreedBytes) :-
     findall(Bytes,
         ( metta_memo_entry(Fun, Arity, _, AVs, CachedResults),
@@ -680,6 +712,7 @@ update_total_bytes_add(Bytes) :-
     ),
     asserta(metta_memo_total_bytes(New)).
 
+% Store a result, enforcing the unique-entry limit and eviction policy.
 memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
     memo_unique_limit(Max),
     get_memo_queue_state(Fun, Arity, Count, Head, Tail),
@@ -708,6 +741,7 @@ memo_store(Fun, Arity, Gen, AVs, CachedResults) :-
       )
     ).
 
+% LRU path: evict victim unconditionally and admit the new entry.
 memo_store_lru(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs) :-
     ( metta_memo_entry(Fun, Arity, _, VictimAVs, VictimResults)
     -> entry_size(VictimAVs, VictimResults, VictimBytes),
@@ -724,6 +758,7 @@ memo_store_lru(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail
     assertz(metta_memo_entry(Fun, Arity, Gen, AVs, CachedResults)),
     set_memo_queue_state(Fun, Arity, Count, Head1, Tail1).
 
+% WTinyLFU path: admit new entry only if its frequency >= victim's frequency.
 memo_store_wtinylfu(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Head1, Tail, VictimAVs) :-
     get_freq(Fun, Arity, VictimAVs, VictimFreq),
     get_freq(Fun, Arity, AVs, NewFreq),
@@ -757,6 +792,8 @@ store_if_current_generation(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
 
 % Public API
 
+%% 'memoize'(+Fun, -'Empty') is det.
+%  Enable memoization for all arities of Fun and reload its clauses.
 'memoize'(Fun, 'Empty') :-
     ( atom(Fun), fun(Fun)
     -> true
@@ -770,6 +807,8 @@ store_if_current_generation(Fun, Arity, ExpectedGen, AVs, CachedResults) :-
     enable_memoization(Fun),
     forall(member(Term, Terms), 'add-atom'('&self', Term, _)).
 
+%% 'memoize'(+Fun, +CallArity, -'Empty') is det.
+%  Enable memoization for Fun at a specific call arity and reload its clauses.
 'memoize'(Fun, CallArity, 'Empty') :-
     ( atom(Fun), fun(Fun)
     -> true
