@@ -140,11 +140,12 @@ apply_memo_option(Opt) :-
 % Stats API
 
 memo_stat_inc(Key) :-
-    ( retract(metta_memo_stat(Key, N0)) -> N is N0 + 1 ; N = 1 ),
-    asserta(metta_memo_stat(Key, N)).
+    ( nb_current(Key, N0) -> N is N0 + 1 ; N = 1 ),
+    nb_setval(Key, N).
 
 memo_stats_snapshot(Stats) :-
-    findall([K, V], metta_memo_stat(K, V), Stats).
+    Keys = [cache_hit, cache_miss, cache_bypass, answer_limit_truncated, waited_on_in_progress, in_progress_fallback],
+    findall([K, V], (member(K, Keys), (nb_current(K, V) ; V = 0)), Stats).
 
 %% 'get-memoize-stats'(-Stats) is det.
 %  Return runtime hit/miss counters as a list of [Key, Value] pairs.
@@ -234,7 +235,7 @@ cache_clear :-
     retractall(metta_memo_in_progress(_, _, _, _)),
     retractall(metta_memo_dep(_, _, _, _)),
     retractall(metta_memo_total_bytes(_)),
-    asserta(metta_memo_total_bytes(0)),
+    assertz(metta_memo_total_bytes(0)),
     retractall(metta_memo_stat(_, _)),
     ( catch(nb_current(metta_cms, _), _, fail) -> nb_delete(metta_cms) ; true ),
     ( catch(nb_current(metta_cms_size, _), _, fail) -> nb_delete(metta_cms_size) ; true ),
@@ -627,6 +628,7 @@ find_global_oldest(Fun, Arity, AVs) :-
         metta_memo_head(F, A, HeadVal),
         Heads),
     Heads = [_|_],
+    % Sort by (HeadVal, Fun, Arity); ties in HeadVal are broken by Fun (alphabetically) then Arity.
     sort(Heads, Sorted),
     Sorted = [(MinHead, Fun, Arity)|_],
     Next is MinHead + 1,
@@ -683,8 +685,8 @@ evict_entry(Fun, Arity, AVs) :-
        ( metta_memo_total_bytes(Total)
        -> NewTotal is max(0, Total - Bytes),
           retractall(metta_memo_total_bytes(_)),
-          asserta(metta_memo_total_bytes(NewTotal))
-       ; asserta(metta_memo_total_bytes(0))
+          assertz(metta_memo_total_bytes(NewTotal))
+       ; assertz(metta_memo_total_bytes(0))
        )
     ; true
     ).
@@ -705,7 +707,7 @@ update_total_bytes(Delta) :-
     ; Current = 0
     ),
     New is max(0, Current + Delta),
-    asserta(metta_memo_total_bytes(New)).
+    assertz(metta_memo_total_bytes(New)).
 
 % Store a result, enforcing the unique-entry limit and eviction policy.
 insert_cache_entry(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count1, Head, Tail) :-
@@ -743,7 +745,7 @@ evict_victim_and_admit(Fun, Arity, Gen, AVs, CachedResults, NewBytes, Count, Hea
        -> NewTotal is CurrentTotal - VictimBytes + NewBytes
        ; NewTotal is NewBytes
        ),
-       asserta(metta_memo_total_bytes(NewTotal))
+       assertz(metta_memo_total_bytes(NewTotal))
     ; true
     ),
     Tail1 is Tail + 1,
