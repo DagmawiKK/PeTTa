@@ -143,12 +143,13 @@ apply_memo_option(Opt) :-
 % Stats API
 
 memo_stat_inc(Key) :-
-    ( nb_current(Key, N0) -> N is N0 + 1 ; N = 1 ),
-    nb_setval(Key, N).
+    ( retract(metta_memo_stat(Key, N0))
+    -> N is N0 + 1
+    ; N = 1 ),
+    assertz(metta_memo_stat(Key, N)).
 
 memo_stats_snapshot(Stats) :-
-    Keys = [cache_hit, cache_miss, cache_bypass, answer_limit_truncated, waited_on_in_progress, in_progress_fallback],
-    findall([K, V], (member(K, Keys), (nb_current(K, V) ; V = 0)), Stats).
+    findall([K, V], metta_memo_stat(K, V), Stats).
 
 %% 'get-memoize-stats'(-Stats) is det.
 %  Return runtime hit/miss counters as a list of [Key, Value] pairs.
@@ -158,8 +159,7 @@ memo_stats_snapshot(Stats) :-
 %% 'clear-memoize-stats'(-true) is det.
 %  Reset all runtime counters to zero.
 'clear-memoize-stats'(true) :-
-    Keys = [cache_hit, cache_miss, cache_bypass, answer_limit_truncated, waited_on_in_progress, in_progress_fallback],
-    forall(member(K, Keys), nb_setval(K, 0)).
+    retractall(metta_memo_stat(_, _)).
 
 % Lifecycle, Dependencies, and Invalidation
 
